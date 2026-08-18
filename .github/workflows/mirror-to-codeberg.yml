@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   mirror:
-    if: github.repository == 'Spyou/Zangetsu'
+    if: github.repository == 'lemmesleep247/Zangetsu'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
