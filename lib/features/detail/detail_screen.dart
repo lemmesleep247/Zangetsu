@@ -38,6 +38,7 @@ import '../../core/playback/filler_service.dart';
 import '../../core/playback/list_status_store.dart';
 import '../../core/privacy/incognito_mode.dart';
 import '../../core/playback/my_list.dart';
+import '../../core/ui/episode_player_sheet.dart';
 import '../../core/ui/list_status_sheet.dart';
 import '../../core/ui/tracker_sync_sheet.dart';
 import '../../core/tracker/tracker.dart';
@@ -57,6 +58,7 @@ import '../../core/theme/app_text.dart';
 import '../../core/trailer/trailer_service.dart';
 import '../../core/tv/tv_back_button.dart';
 import '../../core/tv/tv_focusable.dart';
+import '../../core/tv/tv_load_error_dialog.dart';
 import '../../core/aniyomi/aniyomi_image_provider.dart';
 import '../../core/mihon/mihon_image_provider.dart';
 import '../../core/ui/badge.dart';
@@ -553,12 +555,38 @@ class _DetailViewState extends State<_DetailView>
 
   // ── Cross-source player launch — PRESERVED EXACTLY ────────────────────────
 
-  Future<void> _openPlayer(
+  /// Long-press an episode → choose where it plays, this once. Settings keeps
+  /// owning the standing default, so trying VLC on one episode doesn't quietly
+  /// rewire every later tap. Dismissing plays nothing — a long-press that
+  /// started playback on its own would be a trap.
+  Future<void> _pickPlayerFor(
     List<Episode> episodes,
     int index,
     MediaDetail detail,
     String category,
   ) async {
+    if (index < 0 || index >= episodes.length) return;
+    final ep = episodes[index];
+    final choice = await showEpisodePlayerSheet(
+      context,
+      episodeLabel: ep.title.trim().isNotEmpty
+          ? ep.title.trim()
+          : 'Episode ${ep.number?.toInt() ?? index + 1}',
+      defaultPackage: sl<PlaybackPrefs>().externalPlayerPackage,
+    );
+    if (choice == null || !mounted) return;
+    await _openPlayer(episodes, index, detail, category, playerOverride: choice);
+  }
+
+  Future<void> _openPlayer(
+    List<Episode> episodes,
+    int index,
+    MediaDetail detail,
+    String category, {
+    /// Set only by the long-press sheet: play this one episode in this player,
+    /// ignoring the Settings default. Null keeps the existing behaviour.
+    PlayerChoice? playerOverride,
+  }) async {
     // Reading types never touch the player — route to the reader instead.
     // Both tap paths (Play button + episode-row onTap) call this same
     // function, so gating it here covers both in one place. Safety-critical:
@@ -635,6 +663,7 @@ class _DetailViewState extends State<_DetailView>
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PlayerScreen(
+          playerOverride: playerOverride?.package,
           sourceId: widget.item.sourceId,
           episodes: episodes,
           startIndex: index,
@@ -1423,6 +1452,11 @@ class _DetailViewState extends State<_DetailView>
             trackerProgress: _trackerProgress,
             onOpen: (fullIndex) =>
                 _openPlayer(eps, fullIndex, detail, category),
+            // Reading types resolve to a reader, so there's no player to pick.
+            onPickPlayer: isReading
+                ? null
+                : (fullIndex) =>
+                      _pickPlayerFor(eps, fullIndex, detail, category),
             onInfo: () => _tabController.animateTo(3),
             onRefresh: cubit.refresh,
             onDownload: (ep) => _downloadSingle(ep, detail, category),
