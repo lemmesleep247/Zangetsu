@@ -41,6 +41,7 @@ import '../../core/playback/my_list.dart';
 import '../../core/ui/episode_player_sheet.dart';
 import '../../core/ui/list_status_sheet.dart';
 import '../../core/ui/tracker_sync_sheet.dart';
+import '../../core/tracker/airing_countdown.dart';
 import '../../core/tracker/tracker.dart';
 import '../../core/tracker/tracker_binding_store.dart';
 import '../../core/tracker/tracker_hub.dart';
@@ -363,6 +364,12 @@ class _DetailViewState extends State<_DetailView>
   // Tracker-driven episode grey-out: the connected tracker's watched-episode
   // count, fetched once after the detail loads (null until then / no match).
   int? _trackerProgress;
+
+  /// Next episode to air, from the tracker entry fetched for progress. Null
+  /// for a finished show, a movie, or a title with no tracker match — the row
+  /// hides rather than claiming it doesn't know.
+  int? _nextAiringEpisode;
+  DateTime? _nextAiringAt;
   bool _trackerFetchStarted = false;
 
   /// Fetch the connected tracker's episode progress once, so episodes already
@@ -390,9 +397,27 @@ class _DetailViewState extends State<_DetailView>
           novel: detail.type == ProviderType.novel,
         )
         .then((e) {
+      if (!mounted) return;
+      // Same response the progress comes from — the airing fields were already
+      // being fetched and thrown away, so showing them costs no extra request.
+      // Both null for a finished show, a movie, or a title we couldn't match.
+      final ep = e?.nextAiringEpisode;
+      final at = e?.nextAiringAt;
       final p = e?.progress;
-      if (!mounted || p == null || p <= 0) return;
-      setState(() => _trackerProgress = p);
+      if (p == null || p <= 0) {
+        if (ep != null && at != null) {
+          setState(() {
+            _nextAiringEpisode = ep;
+            _nextAiringAt = at;
+          });
+        }
+        return;
+      }
+      setState(() {
+        _trackerProgress = p;
+        _nextAiringEpisode = ep;
+        _nextAiringAt = at;
+      });
     });
   }
 
@@ -555,6 +580,51 @@ class _DetailViewState extends State<_DetailView>
 
   // ── Cross-source player launch — PRESERVED EXACTLY ────────────────────────
 
+  /// Resolve every mirror for an episode, behind a blocking spinner.
+  ///
+  /// Deliberately not the fast path. Fast returns on the first usable link and
+  /// leaves the rest resolving in the background, so a chooser built from it
+  /// often shows one server out of several — you'd be picking from a list that
+  /// isn't finished. Waiting costs a few seconds and shows the real choice.
+  Future<List<VideoSource>> _resolveWithProgress(Episode ep) async {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      return await sl<SourceRepository>().sources(
+        ep.url,
+        sourceId: widget.item.sourceId,
+        fast: false,
+      );
+    } catch (_) {
+      // A dead source shouldn't leave a spinner on screen; the caller reports
+      // the empty result as "no sources found".
+      return const [];
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  /// Push a manual watched mark out to whichever trackers are connected.
+  ///
+  /// Only whole episode numbers: tracker progress is an integer, so a "12.5"
+  /// recap or special would either round into a real episode or be rejected.
+  /// Same fan-out the player uses when you finish an episode normally.
+  Future<void> _scrobbleUpTo(Episode ep, MediaDetail detail) async {
+    final n = ep.number;
+    if (n == null || n <= 0 || n != n.truncateToDouble()) return;
+    await sl<TrackerHub>().scrobble(
+      malId: detail.malId ?? widget.item.malId,
+      title: detail.type == ProviderType.anime ? detail.title : null,
+      tmdbId: widget.item.tmdbId,
+      tmdbIsTv: widget.item.tmdbIsTv,
+      imdbId: widget.item.imdbId,
+      episode: n.toInt(),
+    );
+  }
+
   /// Long-press an episode → choose where it plays, this once. Settings keeps
   /// owning the standing default, so trying VLC on one episode doesn't quietly
   /// rewire every later tap. Dismissing plays nothing — a long-press that
@@ -567,15 +637,141 @@ class _DetailViewState extends State<_DetailView>
   ) async {
     if (index < 0 || index >= episodes.length) return;
     final ep = episodes[index];
-    final choice = await showEpisodePlayerSheet(
+    final label = ep.title.trim().isNotEmpty
+        ? ep.title.trim()
+        : 'Episode ${ep.number?.toInt() ?? index + 1}';
+    final prefs = sl<PlaybackPrefs>();
+
+    final resume = sl<ResumeStore>();
+    final hub = sl<TrackerHub>();
+    final action = await showEpisodeActionSheet(
       context,
-      episodeLabel: ep.title.trim().isNotEmpty
-          ? ep.title.trim()
-          : 'Episode ${ep.number?.toInt() ?? index + 1}',
-      defaultPackage: sl<PlaybackPrefs>().externalPlayerPackage,
+      episodeLabel: label,
+      currentPlayerLabel: prefs.externalPlayerPackage.isEmpty
+          ? 'Built-in'
+          : (prefs.externalPlayerLabel.isEmpty
+                ? 'External'
+                : prefs.externalPlayerLabel),
+      isWatched:
+          resume.get(widget.item.sourceId, widget.item.url, ep.id)?.finished ??
+          false,
+      tracksToServices: hub.anyConnected,
     );
-    if (choice == null || !mounted) return;
-    await _openPlayer(episodes, index, detail, category, playerOverride: choice);
+    if (action == null || !mounted) return;
+
+    switch (action) {
+      case EpisodeAction.pickPlayer:
+        final choice = await showEpisodePlayerSheet(
+          context,
+          episodeLabel: label,
+          defaultPackage: prefs.externalPlayerPackage,
+        );
+        if (choice == null || !mounted) return;
+        await _openPlayer(
+          episodes,
+          index,
+          detail,
+          category,
+          playerOverride: choice,
+        );
+      case EpisodeAction.reloadLinks:
+        // Drop the prefetch too, or the next fast resolve consumes it before
+        // it ever looks at the resolved cache and hands back the same dead
+        // links — the reload would look like it did nothing.
+        sl<SourceRepository>().invalidateSources(
+          ep.url,
+          sourceId: widget.item.sourceId,
+          includePrefetch: true,
+        );
+        // Deliberately no playback: you reload because the links died, and the
+        // next thing you usually want is a different mirror. Auto-playing
+        // takes that choice away and tends to fail again on the same source.
+        // Re-primes in the background so the play you do make is still quick.
+        sl<SourceRepository>().prefetch(
+          ep.url,
+          sourceId: widget.item.sourceId,
+        );
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Links reloaded')));
+
+      case EpisodeAction.playMirror:
+        // Scraping takes seconds, unlike every other row here, so the wait is
+        // shown rather than left as a dead long-press.
+        final sources = await _resolveWithProgress(ep);
+        if (!mounted) return;
+        if (sources.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No sources found for this episode')),
+          );
+          return;
+        }
+        final picked = await showMirrorSheet(
+          context,
+          episodeLabel: label,
+          sources: sources,
+        );
+        if (picked == null || !mounted) return;
+        // The pick applies to this episode and nothing else — no label saved.
+        // Remembering it meant re-finding the mirror by label on the next
+        // open, and when that list came back without it the language fallback
+        // quietly started a different server: pick vidplay, get vidstream.
+        // Choosing again per episode is the honest trade.
+        await _openPlayer(
+          episodes,
+          index,
+          detail,
+          category,
+          initialSource: picked,
+        );
+
+      case EpisodeAction.toggleWatched:
+        final nowWatched =
+            !(resume
+                    .get(widget.item.sourceId, widget.item.url, ep.id)
+                    ?.finished ??
+                false);
+        await resume.setWatched(
+          widget.item.sourceId,
+          widget.item.url,
+          ep.id,
+          watched: nowWatched,
+        );
+        // Only forward when marking. Trackers store a high-water mark, not a
+        // set, so there's no "unwatch episode 12" to send — dropping progress
+        // back would be a guess at what the user wanted their list to say.
+        if (nowWatched) await _scrobbleUpTo(ep, detail);
+        if (!mounted) return;
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(nowWatched ? 'Marked as watched' : 'Marked unwatched'),
+          ),
+        );
+
+      case EpisodeAction.markAboveWatched:
+        // Everything up to and including the one held: you came back
+        // mid-season and want the backlog cleared, and excluding the episode
+        // you pressed would mean marking it separately every time.
+        for (var i = 0; i <= index; i++) {
+          await resume.setWatched(
+            widget.item.sourceId,
+            widget.item.url,
+            episodes[i].id,
+            watched: true,
+          );
+        }
+        // One tracker write for the highest episode, not one per episode —
+        // progress is a high-water mark, so the rest are implied and firing
+        // twelve updates would just rate-limit the account.
+        await _scrobbleUpTo(ep, detail);
+        if (!mounted) return;
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Marked ${index + 1} episodes as watched')),
+        );
+    }
   }
 
   Future<void> _openPlayer(
@@ -586,6 +782,10 @@ class _DetailViewState extends State<_DetailView>
     /// Set only by the long-press sheet: play this one episode in this player,
     /// ignoring the Settings default. Null keeps the existing behaviour.
     PlayerChoice? playerOverride,
+
+    /// A mirror picked from the long-press menu, opened instead of the
+    /// adaptive default. One-shot — the cubit clears it after this episode.
+    VideoSource? initialSource,
   }) async {
     // Reading types never touch the player — route to the reader instead.
     // Both tap paths (Play button + episode-row onTap) call this same
@@ -664,6 +864,7 @@ class _DetailViewState extends State<_DetailView>
       MaterialPageRoute(
         builder: (_) => PlayerScreen(
           playerOverride: playerOverride?.package,
+          initialSource: initialSource,
           sourceId: widget.item.sourceId,
           episodes: episodes,
           startIndex: index,
@@ -1349,7 +1550,14 @@ class _DetailViewState extends State<_DetailView>
                 _IconAction(
                   icon: _inMyList ? Icons.check_rounded : Icons.add_rounded,
                   active: _inMyList,
-                  label: _status?.shortLabel ?? 'My List',
+                  // Reading-aware: a manga on your list is "Reading", not
+                  // "Watching". Display only — the stored status is still
+                  // WatchStatus.watching, so My List and the trackers are
+                  // untouched, and reading:false returns the plain label
+                  // unchanged for anime.
+                  label: _status == null
+                      ? 'My List'
+                      : shortLabelFor(_status!, reading: isReading),
                   tooltip: _inMyList ? 'Change status' : 'Add to My List',
                   onTap: () => _openListSheet(detail),
                 ),
@@ -1408,7 +1616,12 @@ class _DetailViewState extends State<_DetailView>
               indicatorSize: TabBarIndicatorSize.label,
               indicator: UnderlineTabIndicator(
                 borderSide: BorderSide(color: AppColors.accent, width: 2.5),
-                insets: EdgeInsets.symmetric(horizontal: 2),
+                // Bottom inset lifts the line toward the label. A Tab is 46
+                // high for 15px text, so the indicator otherwise draws at the
+                // bottom of that box with a visible gap under the word.
+                // Raising the line rather than shortening the tab keeps the
+                // tap target at its full height.
+                insets: EdgeInsets.only(left: 2, right: 2, bottom: 8),
               ),
               // Remove the full-width underline divider under the bar.
               dividerColor: Colors.transparent,
@@ -1450,6 +1663,8 @@ class _DetailViewState extends State<_DetailView>
             resumeIndex: _resumeIndex,
             hasAnyMark: hasAnyMark,
             trackerProgress: _trackerProgress,
+            nextAiringEpisode: _nextAiringEpisode,
+            nextAiringAt: _nextAiringAt,
             onOpen: (fullIndex) =>
                 _openPlayer(eps, fullIndex, detail, category),
             // Reading types resolve to a reader, so there's no player to pick.
@@ -1457,7 +1672,6 @@ class _DetailViewState extends State<_DetailView>
                 ? null
                 : (fullIndex) =>
                       _pickPlayerFor(eps, fullIndex, detail, category),
-            onInfo: () => _tabController.animateTo(3),
             onRefresh: cubit.refresh,
             onDownload: (ep) => _downloadSingle(ep, detail, category),
             showDownload: !isReading,
