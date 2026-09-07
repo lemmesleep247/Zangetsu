@@ -1002,6 +1002,12 @@ class AppLocalizationsJa extends AppLocalizations {
   String get font => 'フォント';
 
   @override
+  String get addFont => 'フォントを追加';
+
+  @override
+  String get couldntAddFont => 'そのフォントを追加できませんでした';
+
+  @override
   String get theme => 'テーマ';
 
   @override
@@ -1538,6 +1544,9 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get solveCloudflare => 'Cloudflare を解決';
+
+  @override
+  String get switchSource => 'ソースを変更';
 
   @override
   String get moviesTV => '映画・テレビ';

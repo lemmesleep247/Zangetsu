@@ -995,6 +995,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get font => '字体';
 
   @override
+  String get addFont => '添加字体';
+
+  @override
+  String get couldntAddFont => '无法添加该字体';
+
+  @override
   String get theme => '主题';
 
   @override
@@ -1527,6 +1533,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get solveCloudflare => '通过 Cloudflare 验证';
+
+  @override
+  String get switchSource => '切换来源';
 
   @override
   String get moviesTV => '电影与电视';
@@ -5923,6 +5932,12 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
   String get font => '字型';
 
   @override
+  String get addFont => '新增字型';
+
+  @override
+  String get couldntAddFont => '無法新增該字型';
+
+  @override
   String get theme => '主題';
 
   @override
@@ -6455,6 +6470,9 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
 
   @override
   String get solveCloudflare => '通過 Cloudflare 驗證';
+
+  @override
+  String get switchSource => '切換來源';
 
   @override
   String get moviesTV => '電影與電視';

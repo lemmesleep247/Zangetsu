@@ -1033,6 +1033,12 @@ class AppLocalizationsFr extends AppLocalizations {
   String get font => 'Police';
 
   @override
+  String get addFont => 'Ajouter une police';
+
+  @override
+  String get couldntAddFont => 'Impossible d\'ajouter cette police';
+
+  @override
   String get theme => 'Thème';
 
   @override
@@ -1591,6 +1597,9 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get solveCloudflare => 'Résoudre Cloudflare';
+
+  @override
+  String get switchSource => 'Changer de source';
 
   @override
   String get moviesTV => 'Films et TV';

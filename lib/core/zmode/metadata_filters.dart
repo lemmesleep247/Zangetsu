@@ -153,7 +153,30 @@ enum MetaSort { popularity, score, trending, newest, title }
 /// The genres offered for [kind]. AniList's list is fixed and small, and the
 /// TMDB ids below cover the same ground for movies and TV, so one picker
 /// serves every provider that can filter.
-List<String> metaGenresFor(ZKind kind) => switch (kind) {
+/// AniList's adult genre. Kept out of [metaGenresFor] unless asked for: it is
+/// a real genre on every anime/manga/novel query, but offering it while the
+/// Privacy switch is off would show a tile that can only ever come back empty
+/// (the catalogue sends `isAdult:false`, so nothing in it can match).
+const String kAdultGenre = 'Hentai';
+
+/// The genres offered for [kind], plus [kAdultGenre] when [adult] is on.
+///
+/// [adult] is the caller's read of `PlaybackPrefs.adultMetadata`; the
+/// repository re-checks the same switch before any request, so passing true
+/// here can widen what is OFFERED but never what is returned.
+List<String> metaGenresFor(ZKind kind, {bool adult = false}) {
+  final base = _metaGenresFor(kind);
+  if (!adult || kind == ZKind.movie || kind == ZKind.tv) return base;
+  // Inserted where it sorts, not appended. These lists are alphabetical, and
+  // one entry stuck on the end reads as a bolted-on afterthought — you go
+  // looking under H and it is at the bottom of the grid.
+  final out = [...base];
+  final at = out.indexWhere((g) => g.compareTo(kAdultGenre) > 0);
+  out.insert(at < 0 ? out.length : at, kAdultGenre);
+  return out;
+}
+
+List<String> _metaGenresFor(ZKind kind) => switch (kind) {
   ZKind.anime || ZKind.manga || ZKind.novel => const [
     'Action',
     'Adventure',
@@ -236,6 +259,27 @@ const Map<String, int> _tmdbTvGenres = {
   'War': 10768,
   'Western': 37,
 };
+
+/// The genre names behind TMDB's `genre_ids`, which is all a list response
+/// carries — full `genres` objects only come back on a detail fetch.
+///
+/// Without this every movie/TV item reached the app with no genres at all, so
+/// anything keyed on them (the genre tiles' artwork) had nothing to match and
+/// silently fell back. Ids that map to more than one name (TV folds Adventure
+/// into Action, and Science Fiction into Fantasy) yield each of them; ids with
+/// no entry are dropped rather than guessed.
+List<String> tmdbGenreNames(List<dynamic> ids, {required bool isTv}) {
+  final table = isTv ? _tmdbTvGenres : _tmdbMovieGenres;
+  final out = <String>[];
+  for (final raw in ids) {
+    final id = raw is int ? raw : int.tryParse('$raw');
+    if (id == null) continue;
+    for (final e in table.entries) {
+      if (e.value == id && !out.contains(e.key)) out.add(e.key);
+    }
+  }
+  return out;
+}
 
 /// The TMDB id for [genre], or null when that genre has no equivalent on this
 /// side (Horror and Thriller are movie-only, for instance) — a null must drop

@@ -1028,6 +1028,12 @@ class AppLocalizationsDe extends AppLocalizations {
   String get font => 'Schrift';
 
   @override
+  String get addFont => 'Schrift hinzufügen';
+
+  @override
+  String get couldntAddFont => 'Schrift konnte nicht hinzugefügt werden';
+
+  @override
   String get theme => 'Design';
 
   @override
@@ -1588,6 +1594,9 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get solveCloudflare => 'Cloudflare lösen';
+
+  @override
+  String get switchSource => 'Quelle wechseln';
 
   @override
   String get moviesTV => 'Filme & TV';

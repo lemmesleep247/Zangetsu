@@ -624,12 +624,58 @@ class _SubtitleStyleSheetState extends State<_SubtitleStyleSheet> {
   void initState() {
     super.initState();
     () async {
+      // Only the player registers cached fonts on start, so opening this from
+      // Settings would preview every already-cached font in the default one.
+      await SubtitleFontService.instance.registerCached();
       for (final f in kBundledSubtitleFonts) {
         if (f.isEmpty) continue;
         _fontAvailable[f] = await SubtitleFontService.instance.isAvailable(f);
       }
       if (mounted) setState(() {});
     }();
+  }
+
+  /// Fonts the user added themselves, family → filename. Read fresh each build
+  /// so adding or removing one updates the list without extra bookkeeping.
+  Map<String, String> get _customFonts => _prefs.customSubtitleFonts;
+
+  /// Pick a .ttf/.otf and add it. The family is read out of the file, so the
+  /// name shown here is the one libass will match on.
+  Future<void> _addCustomFont() async {
+    try {
+      final picked = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: const ['ttf', 'otf'],
+      );
+      final path = picked?.path;
+      if (path == null) return;
+      final family = await SubtitleFontService.instance.addCustomFont(path);
+      if (!mounted) return;
+      if (family == null) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text(context.l10n.couldntAddFont)),
+        );
+        return;
+      }
+      // Select it straight away — picking a font you just added and having
+      // nothing change would read as a failure.
+      await _apply(() => _prefs.setSubtitleFont(family));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text(context.l10n.couldntAddFont)),
+        );
+      }
+    }
+  }
+
+  /// Remove a custom font. [SubtitleFontService.removeCustomFont] also resets
+  /// the selection when the removed font was the active one, so the sheet just
+  /// has to re-read and re-apply.
+  Future<void> _removeCustomFont(String family) async {
+    await SubtitleFontService.instance.removeCustomFont(family);
+    if (!mounted) return;
+    await _apply(() async {});
   }
 
   /// Apply a font — downloading it first (with a spinner on its row) if it
@@ -754,6 +800,21 @@ class _SubtitleStyleSheetState extends State<_SubtitleStyleSheet> {
                           active: font == f,
                           onTap: () => _pickFont(f),
                         ),
+                      // The user's own fonts. Always local, so they skip the
+                      // download/availability dance entirely.
+                      for (final f in _customFonts.keys)
+                        _SheetRow(
+                          label: f,
+                          active: font == f,
+                          onTap: () => _pickFont(f),
+                          onRemove: () => _removeCustomFont(f),
+                        ),
+                      _SheetRow(
+                        label: context.l10n.addFont,
+                        icon: Icons.upload_file,
+                        active: false,
+                        onTap: _addCustomFont,
+                      ),
                     ],
                   ),
                 ),
@@ -1496,6 +1557,7 @@ class _SheetRow extends StatelessWidget {
     this.subtitle,
     this.toggleValue,
     this.loading = false,
+    this.onRemove,
   });
 
   final String label;
@@ -1515,6 +1577,11 @@ class _SheetRow extends StatelessWidget {
 
   /// Show a trailing spinner (e.g. while a font downloads).
   final bool loading;
+
+  /// When non-null the row gets a trailing remove button — used by the fonts
+  /// the user added themselves, which are the only rows that can be deleted.
+  /// Kept as a button rather than a long-press so it is discoverable.
+  final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -1585,12 +1652,28 @@ class _SheetRow extends StatelessWidget {
                   )
                 else if (icon != null)
                   Icon(icon, color: AppColors.textSecondary, size: 20)
-                else if (active)
-                  Icon(
-                    Icons.check_circle_rounded,
-                    color: AppColors.accent,
-                    size: 20,
-                  ),
+                else ...[
+                  if (active)
+                    Icon(
+                      Icons.check_circle_rounded,
+                      color: AppColors.accent,
+                      size: 20,
+                    ),
+                  if (onRemove != null)
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      // Free localised label so the bare icon isn't silent to
+                      // screen readers.
+                      tooltip: MaterialLocalizations.of(
+                        context,
+                      ).deleteButtonTooltip,
+                      color: AppColors.textSecondary,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints(),
+                      padding: const EdgeInsets.only(left: 8),
+                      onPressed: onRemove,
+                    ),
+                ],
               ],
             ),
           ),

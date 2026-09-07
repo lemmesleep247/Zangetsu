@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart' show rootBundle;
+import '../di/injector.dart';
 import '../../core/platform/app_paths.dart';
 
+import 'playback_prefs.dart' show PlaybackPrefs;
 import 'tv_track_helpers.dart' show subtitleFontAsset, subtitleFontFileName;
 
 /// Copies / locates a subtitle font under `<appSupport>/sub_fonts/` so native
@@ -31,8 +33,17 @@ Future<String?> stageSubtitleFont(String family) async {
     }
   }
 
-  // Download-on-demand: already ensured into this folder by the caller.
-  final fname = subtitleFontFileName(family);
+  // A font the user added, or one downloaded on demand — both already sit in
+  // this folder. Customs are looked up first because [subtitleFontFileName]
+  // only knows the built-in families and answers null for anything else.
+  //
+  // On a TV this lookup finds nothing for a custom family (the file cannot
+  // travel between devices), so it returns null and the native player falls
+  // back to Typeface.DEFAULT — the same path any unknown family takes.
+  final custom = sl.isRegistered<PlaybackPrefs>()
+      ? sl<PlaybackPrefs>().customSubtitleFonts[family]
+      : null;
+  final fname = custom ?? subtitleFontFileName(family);
   if (fname == null) return null;
   final f = File('${dir.path}/$fname');
   return f.existsSync() ? f.path : null;

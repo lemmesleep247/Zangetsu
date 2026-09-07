@@ -1975,6 +1975,18 @@ abstract class AppLocalizations {
   /// **'Font'**
   String get font;
 
+  /// No description provided for @addFont.
+  ///
+  /// In en, this message translates to:
+  /// **'Add font'**
+  String get addFont;
+
+  /// No description provided for @couldntAddFont.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t add that font'**
+  String get couldntAddFont;
+
   /// No description provided for @theme.
   ///
   /// In en, this message translates to:
@@ -3025,6 +3037,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Solve Cloudflare'**
   String get solveCloudflare;
+
+  /// No description provided for @switchSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Switch source'**
+  String get switchSource;
 
   /// No description provided for @moviesTV.
   ///

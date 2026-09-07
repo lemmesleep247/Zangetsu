@@ -1031,6 +1031,12 @@ class AppLocalizationsEs extends AppLocalizations {
   String get font => 'Fuente';
 
   @override
+  String get addFont => 'Añadir fuente';
+
+  @override
+  String get couldntAddFont => 'No se pudo añadir esa fuente';
+
+  @override
   String get theme => 'Tema';
 
   @override
@@ -1587,6 +1593,9 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get solveCloudflare => 'Resolver Cloudflare';
+
+  @override
+  String get switchSource => 'Cambiar fuente';
 
   @override
   String get moviesTV => 'Películas y TV';

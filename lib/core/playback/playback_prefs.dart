@@ -678,11 +678,36 @@ class PlaybackPrefs {
   Future<void> setSubtitleBackground(bool value) =>
       _box.put('subtitleBackground', value);
 
-  /// Subtitle font family — one of [kBundledSubtitleFonts]. Empty = mpv default
+  /// Subtitle font family — one of [kBundledSubtitleFonts], or a family the
+  /// user added themselves (see [customSubtitleFonts]). Empty = mpv default
   /// (don't override the font). Maps to mpv's `sub-font`.
   String get subtitleFont =>
       _box.get('subtitleFont', defaultValue: '') as String;
   Future<void> setSubtitleFont(String value) => _box.put('subtitleFont', value);
+
+  /// Fonts the user supplied themselves: family name → filename in
+  /// `<appSupport>/sub_fonts/`.
+  ///
+  /// Separate from [kBundledSubtitleFonts] because that list is a compile-time
+  /// const the pickers iterate, and because these have no download URL — the
+  /// file is already on disk. The family is read out of the font itself
+  /// (`fontFamilyFromBytes`) so libass can match it.
+  ///
+  /// Phone-only: the file cannot travel to a TV (backup carries Hive boxes, not
+  /// files), so a TV that syncs this pref simply finds no file and falls back
+  /// to the default — the same path an unknown family already takes.
+  Map<String, String> get customSubtitleFonts {
+    final raw = _box.get('customSubtitleFonts');
+    if (raw is! Map) return const {};
+    return {
+      for (final e in raw.entries)
+        if (e.key is String && e.value is String)
+          e.key as String: e.value as String,
+    };
+  }
+
+  Future<void> setCustomSubtitleFonts(Map<String, String> value) =>
+      _box.put('customSubtitleFonts', value);
 
   /// Subtitle text colour as an 8-digit hex (`#RRGGBBAA`), default opaque white.
   /// When non-empty this takes precedence over the legacy [subtitleColor] token.
