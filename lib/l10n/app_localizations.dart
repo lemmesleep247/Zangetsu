@@ -4580,6 +4580,18 @@ abstract class AppLocalizations {
   /// **'Source settings'**
   String get sourceSettings;
 
+  /// No description provided for @otherSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Other settings'**
+  String get otherSettings;
+
+  /// No description provided for @otherSettingsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'This source has settings we can\'t show here yet'**
+  String get otherSettingsSubtitle;
+
   /// No description provided for @sourceDomain.
   ///
   /// In en, this message translates to:
@@ -7453,6 +7465,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Outline style'**
   String get outlineStyle;
+
+  /// No description provided for @ownStylingKept.
+  ///
+  /// In en, this message translates to:
+  /// **'Subtitles with their own styling keep it while styled subtitles are on'**
+  String get ownStylingKept;
 
   /// No description provided for @outlineColour.
   ///

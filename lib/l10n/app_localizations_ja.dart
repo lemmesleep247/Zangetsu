@@ -2332,6 +2332,12 @@ class AppLocalizationsJa extends AppLocalizations {
   String get sourceSettings => 'ソース設定';
 
   @override
+  String get otherSettings => 'その他の設定';
+
+  @override
+  String get otherSettingsSubtitle => 'このソースには、ここではまだ表示できない設定があります';
+
+  @override
   String get sourceDomain => 'ソースのドメイン';
 
   @override
@@ -4134,6 +4140,9 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get outlineStyle => 'アウトラインスタイル';
+
+  @override
+  String get ownStylingKept => '独自のスタイルを持つ字幕は、スタイル付き字幕が有効な間そのまま表示されます';
 
   @override
   String get outlineColour => '輪郭の色';

@@ -2390,6 +2390,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sourceSettings => 'Source settings';
 
   @override
+  String get otherSettings => 'Other settings';
+
+  @override
+  String get otherSettingsSubtitle =>
+      'This source has settings we can\'t show here yet';
+
+  @override
   String get sourceDomain => 'Source domain';
 
   @override
@@ -4217,6 +4224,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get outlineStyle => 'Outline style';
+
+  @override
+  String get ownStylingKept =>
+      'Subtitles with their own styling keep it while styled subtitles are on';
 
   @override
   String get outlineColour => 'Outline colour';

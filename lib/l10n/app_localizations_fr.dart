@@ -2416,6 +2416,13 @@ class AppLocalizationsFr extends AppLocalizations {
   String get sourceSettings => 'Réglages de la source';
 
   @override
+  String get otherSettings => 'Autres réglages';
+
+  @override
+  String get otherSettingsSubtitle =>
+      'Cette source a des réglages que nous ne pouvons pas encore afficher ici';
+
+  @override
   String get sourceDomain => 'Domaine de la source';
 
   @override
@@ -4259,6 +4266,10 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get outlineStyle => 'Style contour';
+
+  @override
+  String get ownStylingKept =>
+      'Les sous-titres qui ont leur propre style le conservent tant que les sous-titres stylisés sont activés';
 
   @override
   String get outlineColour => 'Couleur du contour';

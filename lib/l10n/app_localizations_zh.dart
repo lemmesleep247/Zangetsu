@@ -2318,6 +2318,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sourceSettings => '来源设置';
 
   @override
+  String get otherSettings => '其他设置';
+
+  @override
+  String get otherSettingsSubtitle => '此来源有一些设置暂时无法在此显示';
+
+  @override
   String get sourceDomain => '来源域名';
 
   @override
@@ -4098,6 +4104,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get outlineStyle => '轮廓样式';
+
+  @override
+  String get ownStylingKept => '启用样式字幕时，自带样式的字幕会保留其样式';
 
   @override
   String get outlineColour => '轮廓颜色';
@@ -7246,6 +7255,12 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
   String get sourceSettings => '來源設定';
 
   @override
+  String get otherSettings => '其他設定';
+
+  @override
+  String get otherSettingsSubtitle => '此來源有一些設定暫時無法在此顯示';
+
+  @override
   String get sourceDomain => '來源網域';
 
   @override
@@ -8970,6 +8985,9 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
 
   @override
   String get outlineStyle => '輪廓樣式';
+
+  @override
+  String get ownStylingKept => '啟用樣式字幕時，自帶樣式的字幕會保留其樣式';
 
   @override
   String get outlineColour => '輪廓顏色';
