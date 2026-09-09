@@ -428,11 +428,18 @@ class PlayerCubit extends Cubit<PlayerState> {
           : null;
       HlsAudioRendition? pick;
       if (want != null && want.isNotEmpty) {
-        for (final a in auds) {
-          if (a.lang.toLowerCase() == want || a.name.toLowerCase() == want) {
-            pick = a;
-            break;
+        final w = _wantedAudio(want);
+        for (final byName in [true, false]) {
+          for (final a in auds) {
+            final hit = byName
+                ? w.title.isNotEmpty && a.name.toLowerCase() == w.title
+                : w.lang.isNotEmpty && a.lang.toLowerCase() == w.lang;
+            if (hit) {
+              pick = a;
+              break;
+            }
           }
+          if (pick != null) break;
         }
       }
       pick ??= auds.firstWhere((a) => a.isDefault, orElse: () => auds.first);
@@ -1191,6 +1198,65 @@ class PlayerCubit extends Cubit<PlayerState> {
     ];
   }
 
+  /// The second line under an audio track: how many channels, and the codec.
+  ///
+  /// Two sources for it, because of the trade this player makes. mpv fills
+  /// [AudioTrack.channels] and [AudioTrack.codec] only for streams it has
+  /// actually opened, and we deliberately hand it one rendition and attach the
+  /// rest on demand — that is what took a start from 38s to 5s. So for a
+  /// rendition nobody has picked yet, fall back to the CHANNELS attribute the
+  /// master playlist already told us, which costs no fetch.
+  ///
+  /// Null when neither knows, so the row just shows its name.
+  String? audioDetail(AudioTrack t) {
+    final parts = <String>[
+      ?_channelLabel(
+        t.channelscount ?? _channelCount(t.channels) ?? _renditionCount(t.id),
+      ),
+      ?t.codec?.toUpperCase(),
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  /// The channel count the master playlist declared for [id], for a rendition
+  /// mpv has not opened and so knows nothing about.
+  int? _renditionCount(String id) {
+    for (final r in _audioRenditions) {
+      if (r.uri == id) return _channelCount(r.channels);
+    }
+    return null;
+  }
+
+  /// A channel count out of whatever text we were handed.
+  ///
+  /// mpv answers `demux-channels` with a layout name when it knows one and
+  /// with "unknown2" / "unknown6" when it only knows how many there are — so
+  /// the digits are the reliable part, and printing the raw value put
+  /// "unknown6" on screen. A playlist's CHANNELS is a bare count already.
+  static int? _channelCount(String? raw) {
+    final v = raw?.trim().toLowerCase();
+    if (v == null || v.isEmpty) return null;
+    if (v.startsWith('mono')) return 1;
+    if (v.startsWith('stereo')) return 2;
+    // "5.1" and "7.1" are counts written as a layout; take the leading number
+    // of full-range channels and add the low-frequency one.
+    final surround = RegExp(r'^(\d+)\.(\d+)').firstMatch(v);
+    if (surround != null) {
+      return int.parse(surround.group(1)!) + int.parse(surround.group(2)!);
+    }
+    final digits = RegExp(r'(\d+)').firstMatch(v);
+    return digits == null ? null : int.tryParse(digits.group(1)!);
+  }
+
+  static String? _channelLabel(int? count) => switch (count) {
+    null || 0 => null,
+    1 => 'Mono',
+    2 => 'Stereo',
+    6 => '5.1',
+    8 => '7.1',
+    _ => '$count ch',
+  };
+
   /// The video renditions mpv found inside the open media, best first.
   ///
   /// This is the fallback for streams our own HLS-master parsing can't read —
@@ -1271,10 +1337,41 @@ class PlayerCubit extends Cubit<PlayerState> {
   /// Currently-selected subtitle track (id == 'no' when subs are off).
   SubtitleTrack get activeSubtitleTrack => player.state.track.subtitle;
 
+  /// How a remembered audio track is written down: `language|title`.
+  ///
+  /// It used to be the language alone, which cannot tell two tracks apart
+  /// when they share one — a file with "English TrueHD Atmos 7.1" and
+  /// "English Dolby Digital 5.1" saved "en" for both, and reopening it
+  /// restored whichever came first rather than the one that was picked.
+  ///
+  /// Both halves are kept because each fails differently. The title
+  /// identifies the exact track but is a release's own wording, so the next
+  /// episode may not carry it; the language always matches something but not
+  /// necessarily the right thing. Written together, the reader can try the
+  /// precise one and fall back to the loose one.
+  ///
+  /// A key with no bar in it is one of the old language-only ones, and still
+  /// reads correctly — see [_wantedAudio].
+  static String audioPrefKey(String? language, String? title, String id) {
+    final lang = language?.trim() ?? '';
+    final name = title?.trim() ?? '';
+    return (lang.isEmpty && name.isEmpty) ? id : '$lang|$name';
+  }
+
+  /// The two halves of [audioPrefKey], lowercased, for matching.
+  static ({String lang, String title}) _wantedAudio(String stored) {
+    final bar = stored.indexOf('|');
+    if (bar < 0) return (lang: stored.toLowerCase(), title: '');
+    return (
+      lang: stored.substring(0, bar).trim().toLowerCase(),
+      title: stored.substring(bar + 1).trim().toLowerCase(),
+    );
+  }
+
   void setAudioTrack(AudioTrack t) {
     player.setAudioTrack(t);
     final url = showUrl;
-    final pref = t.language ?? t.title ?? t.id;
+    final pref = audioPrefKey(t.language, t.title, t.id);
     if (url != null && url.isNotEmpty && pref.isNotEmpty) {
       sl<TitlePrefsStore>().setAudioTrack(sourceId, url, pref);
     }
@@ -1293,13 +1390,21 @@ class PlayerCubit extends Cubit<PlayerState> {
       _audioApplied = true;
       return;
     }
-    final p = pref.toLowerCase();
-    for (final t in mediaAudioTracks) {
-      if ((t.language ?? '').toLowerCase() == p ||
-          (t.title ?? '').toLowerCase() == p) {
-        player.setAudioTrack(t);
-        _audioApplied = true;
-        return;
+    final want = _wantedAudio(pref);
+    // The exact track first. Only if this release does not carry that title
+    // does the language decide, which is all the old keys ever had.
+    for (final byTitle in [true, false]) {
+      for (final t in mediaAudioTracks) {
+        final hit = byTitle
+            ? want.title.isNotEmpty &&
+                  (t.title ?? '').trim().toLowerCase() == want.title
+            : want.lang.isNotEmpty &&
+                  (t.language ?? '').trim().toLowerCase() == want.lang;
+        if (hit) {
+          player.setAudioTrack(t);
+          _audioApplied = true;
+          return;
+        }
       }
     }
     // Not loaded yet — retry on the next tracks update.
@@ -2286,19 +2391,36 @@ class PlayerCubit extends Cubit<PlayerState> {
     // until the app force-closes. mpv recovers on its own once the pieces land.
     if (_activeTorrentId != null) return;
     final lower = e.toLowerCase();
-    // libmpv emits many non-fatal warnings (e.g. the iOS Simulator has no
-    // audio device). Only treat clear "this stream is unplayable" errors as a
-    // reason to switch sources — never the audio-device/no-sound warnings.
-    final fatal =
-        lower.contains('failed to open') ||
-        lower.contains('recognize file format') ||
-        lower.contains('ffurl') ||
-        lower.contains('connection');
     // If THIS source is already playing (position advanced), the error is a
     // transient/secondary one (HLS segment blip, failed sub track) — ignore it.
     // Only a source that NEVER started is worth cycling away from.
     if (_startedThisSource) return;
-    if (!fatal || _recovering) return;
+    if (_recovering) return;
+    // Anything else is fatal unless it is on the list below.
+    //
+    // This used to be the other way round: fail over only on four hardcoded
+    // English phrases from libmpv, ignore everything else. Any wording those
+    // four did not cover — a new mpv message, a codec complaint, an http error
+    // phrased differently — was read as harmless, so a source that had never
+    // played a single frame was never cycled away from and the screen simply
+    // sat there. An unknown error on a stream that never started is not a
+    // reason to do nothing; it is the definition of one worth leaving.
+    //
+    // The list is the genuinely harmless ones, and they are all about the
+    // things AROUND the video rather than the video: an output device that
+    // isn't there (the iOS Simulator has none), a subtitle track that failed
+    // on its own, libass not finding a font. None of those mean the stream is
+    // unplayable, and cycling sources would not fix any of them.
+    const harmless = [
+      'audio device',
+      'audio output',
+      'subtitle',
+      'sub file',
+      'fontconfig',
+      'libass',
+      'ffmpeg-fallback',
+    ];
+    if (harmless.any(lower.contains)) return;
     // A direct Aniyomi stream that failed on Cloudflare → swap to its hidden
     // proxy fallback (same quality) rather than cycling through other qualities.
     final act = state.active;
@@ -2320,13 +2442,21 @@ class PlayerCubit extends Cubit<PlayerState> {
       preferQuality: _preferredQuality(),
     );
     if (next != null) {
+      // Say so, the same way a stall failover already does. Silence here
+      // looked identical to a frozen screen at the exact moment the player
+      // was working hardest.
+      _toast("That one didn't cut. Trying another source.");
       await _open(next, seekTo: _lastPos);
       _applyDefaultQuality(); // honor the quality pref on the fallback source too
     } else {
       emit(
         state.copyWith(
+          // Headline, then the plain fact on its own line — the screen styles
+          // them differently. The joke never replaces the information: a
+          // viewer has to be able to tell a dead host from no connection.
           error: () =>
-              'No source could be played on this device (tried ${_tried.length}).',
+              'Nothing left to cut.\n'
+              'Every source failed (tried ${_tried.length}).',
         ),
       );
     }
@@ -2364,7 +2494,11 @@ class PlayerCubit extends Cubit<PlayerState> {
         _episodeUrl(currentEpisode),
         sourceId: sourceId,
       );
-      emit(state.copyWith(error: () => 'All servers stalled — tap retry.'));
+      emit(
+        state.copyWith(
+          error: () => 'Nothing left to cut.\nEvery server stalled.',
+        ),
+      );
     }
     _recovering = false;
   }

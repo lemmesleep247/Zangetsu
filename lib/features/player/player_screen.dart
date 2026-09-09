@@ -433,8 +433,59 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _bumpControls();
   }
 
-  void _initInApp() {
+  /// Whether the opening rotation has been asked for. Two paths race to it
+  /// below, so the first one wins and the second is a no-op.
+  bool _turned = false;
+
+  void _turnLandscape() {
+    if (_turned || !mounted) return;
+    _turned = true;
     SystemChrome.setPreferredOrientations(_orientationLock);
+  }
+
+  /// Ask for landscape once the screen we opened over has faded out, rather
+  /// than the instant this screen is built.
+  ///
+  /// Android takes a snapshot of the window when a rotation is requested and
+  /// composites it into the rotation animation. Asking from initState means
+  /// that snapshot is the screen we came from, at full opacity, and it gets
+  /// drawn mixed into this player for as long as the animation runs. That is
+  /// about 17ms on Android 14, too fast to see; on Android 17 it is about
+  /// 350ms and reads as two screens at once.
+  ///
+  /// So wait for this player to be the only thing on screen. It fades in over
+  /// `Interval(0.0, 0.75)` of the transition (see
+  /// [FadeForwardsPageTransitionsBuilder]), and it is opaque black behind its
+  /// video, so past that point nothing underneath contributes to the frame.
+  ///
+  /// Measured on Android 17, not assumed: at 0.3 the screen behind was still
+  /// fully drawn with this player faint on top of it, which is the bug itself.
+  /// The outgoing page does not fade here — that only happens through a
+  /// delegated transition, which this route does not get.
+  void _turnLandscapeWhenCovered() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final opening = ModalRoute.of(context)?.animation;
+      if (opening == null || opening.status == AnimationStatus.completed) {
+        _turnLandscape();
+        return;
+      }
+      void turnOnceCovered() {
+        if (opening.value < 0.8) return;
+        opening.removeListener(turnOnceCovered);
+        _turnLandscape();
+      }
+
+      opening.addListener(turnOnceCovered);
+      // If that value never arrives — the transition is interrupted, the route
+      // is swapped underneath us — the player would sit in portrait for good,
+      // which is worse than the thing this avoids.
+      Future.delayed(const Duration(milliseconds: 600), _turnLandscape);
+    });
+  }
+
+  void _initInApp() {
+    _turnLandscapeWhenCovered();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     // Wake-lock is bound to playback in _startSession, once the player exists.
     // The volume swipe sets the real system volume; hide the OS volume bar so
@@ -1187,6 +1238,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   /// Double-tap a side zone to seek. dir −1 = left/rewind, +1 = right/forward.
   void _seekZone(int dir) => _accumSeek(dir);
+
+  /// Height of the strip left to the system at the top of the player, so a
+  /// pull-down there opens the notification shade rather than dragging
+  /// brightness or volume.
+  static const double _kEdgeBand = 48;
+
+  /// The same at the bottom, asked of the device rather than guessed: the home
+  /// bar is a different height across phones, and in landscape it is not where
+  /// a portrait guess would put it. Floored so a device reporting nothing
+  /// still leaves a band.
+  double _bottomBand(BuildContext context) {
+    final system = MediaQuery.systemGestureInsetsOf(context).bottom;
+    return system > 24 ? system : 24;
+  }
 
   // Vertical swipe: left half adjusts screen brightness, right half adjusts
   // volume (MX/Netflix-style). Each drag seeds from the current value, then
@@ -2283,11 +2348,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       color: AppColors.textTertiary,
                     ),
                     const SizedBox(height: 12),
+                    // First line is the headline, the rest is what actually
+                    // happened. Kept as one string in the state and split here
+                    // so the controller stays free of presentation — and so a
+                    // message with no second line still renders fine.
                     Text(
-                      state.error!,
-                      style: AppText.body,
+                      state.error!.split('\n').first,
+                      style: AppText.title.copyWith(fontSize: 17),
                       textAlign: TextAlign.center,
                     ),
+                    if (state.error!.contains('\n')) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        state.error!.split('\n').skip(1).join('\n'),
+                        style: AppText.body.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
                     const SizedBox(height: 16),
                     TextButton(
                       onPressed: () => _c.openEpisode(state.currentIndex),
@@ -2452,36 +2531,60 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     fit: StackFit.expand,
                     children: [
                       // Drag + long-press layer (opaque, no tap handler).
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onLongPressStart: _holdSpeedEnabled
-                            ? (_) {
-                                _c.setRate(2.0);
-                                setState(() => _holding = true);
-                              }
-                            : null,
-                        onLongPressEnd: _holdSpeedEnabled
-                            ? (_) {
-                                _c.setRate(1.0);
-                                setState(() => _holding = false);
-                              }
-                            : null,
-                        onVerticalDragStart: _onVDragStart,
-                        onVerticalDragUpdate: _onVDragUpdate,
-                        onVerticalDragEnd: _onVDragEnd,
-                        // Nulled rather than no-op'd when the setting is off:
-                        // a live recognizer still joins the gesture arena and
-                        // would swallow any tap that drifted sideways, so the
-                        // controls would stop toggling on a slightly sloppy tap.
-                        onHorizontalDragStart: _swipeSeekEnabled
-                            ? _onHDragStart
-                            : null,
-                        onHorizontalDragUpdate: _swipeSeekEnabled
-                            ? _onHDragUpdate
-                            : null,
-                        onHorizontalDragEnd: _swipeSeekEnabled
-                            ? _onHDragEnd
-                            : null,
+                      //
+                      // Inset from the top and bottom rather than filling
+                      // the screen. Opaque means this claims a swipe before
+                      // the system sees it, and filling the screen turned a
+                      // pull-down from the top edge into a brightness or
+                      // volume drag instead of the notification shade, with
+                      // the picture dimming to nothing on the way. Same at
+                      // the bottom against the home bar.
+                      //
+                      // Leaving those two bands uncovered is the only thing
+                      // that works: by the time [_onVDragStart] could turn
+                      // the touch down, this recognizer has already won the
+                      // gesture arena and the swipe is eaten either way.
+                      //
+                      // Taps are untouched. They are their own translucent
+                      // layer below this one, still covering the whole
+                      // screen, so show/hide and double-tap seek still work
+                      // right up to the edges.
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        top: _kEdgeBand,
+                        bottom: _bottomBand(context),
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onLongPressStart: _holdSpeedEnabled
+                              ? (_) {
+                                  _c.setRate(2.0);
+                                  setState(() => _holding = true);
+                                }
+                              : null,
+                          onLongPressEnd: _holdSpeedEnabled
+                              ? (_) {
+                                  _c.setRate(1.0);
+                                  setState(() => _holding = false);
+                                }
+                              : null,
+                          onVerticalDragStart: _onVDragStart,
+                          onVerticalDragUpdate: _onVDragUpdate,
+                          onVerticalDragEnd: _onVDragEnd,
+                          // Nulled rather than no-op'd when the setting is off:
+                          // a live recognizer still joins the gesture arena and
+                          // would swallow any tap that drifted sideways, so the
+                          // controls would stop toggling on a slightly sloppy tap.
+                          onHorizontalDragStart: _swipeSeekEnabled
+                              ? _onHDragStart
+                              : null,
+                          onHorizontalDragUpdate: _swipeSeekEnabled
+                              ? _onHDragUpdate
+                              : null,
+                          onHorizontalDragEnd: _swipeSeekEnabled
+                              ? _onHDragEnd
+                              : null,
+                        ),
                       ),
                       // Tap zones — translucent so drags still reach the layer
                       // below. Thirds match the old seek trigger areas. The
