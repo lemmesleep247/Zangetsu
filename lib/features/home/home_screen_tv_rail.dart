@@ -1,7 +1,6 @@
 // The TV poster rail — one labelled row of D-pad cards.
 part of 'home_screen_tv.dart';
 
-
 // ── Poster Rail ───────────────────────────────────────────────────────────────
 
 /// One labelled horizontal row of D-pad-focusable poster cards for a [HomeSection].
@@ -79,6 +78,7 @@ class TvRail extends StatelessWidget {
                         height: _cardHeight,
                         child: TvFocusable(
                           onTap: onSeeAll!,
+                          waitForKeyUp: true,
                           variant: TvFocusVariant.float,
                           scale: 1.10,
                           semanticLabel: context.l10n.seeAll,

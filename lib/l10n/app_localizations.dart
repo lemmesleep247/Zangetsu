@@ -2572,7 +2572,7 @@ abstract class AppLocalizations {
   /// No description provided for @qualityAndSubDubBadges.
   ///
   /// In en, this message translates to:
-  /// **'Quality and Sub/Dub badges'**
+  /// **'Score, quality and Sub/Dub badges'**
   String get qualityAndSubDubBadges;
 
   /// No description provided for @animateLists.
@@ -7748,6 +7748,12 @@ abstract class AppLocalizations {
   /// **'Preparing…'**
   String get downloadPreparing;
 
+  /// No description provided for @downloadFinalizing.
+  ///
+  /// In en, this message translates to:
+  /// **'Processing…'**
+  String get downloadFinalizing;
+
   /// No description provided for @downloadPausedProgress.
   ///
   /// In en, this message translates to:
@@ -7915,18 +7921,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Tomorrow'**
   String get relativeTomorrow;
-
-  /// No description provided for @weekView.
-  ///
-  /// In en, this message translates to:
-  /// **'Week'**
-  String get weekView;
-
-  /// No description provided for @monthView.
-  ///
-  /// In en, this message translates to:
-  /// **'Month'**
-  String get monthView;
 
   /// No description provided for @scheduleSlotMorning.
   ///
@@ -8641,6 +8635,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Choose a source'**
   String get chooseSource;
+
+  /// No description provided for @whichOneIsIt.
+  ///
+  /// In en, this message translates to:
+  /// **'Which one is it?'**
+  String get whichOneIsIt;
+
+  /// No description provided for @searchingSourceShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Searching {name}'**
+  String searchingSourceShort(String name);
+
+  /// No description provided for @matchResultCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 result} other{{count} results}}'**
+  String matchResultCount(int count);
+
+  /// No description provided for @nothingOnSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing on {name}'**
+  String nothingOnSource(String name);
+
+  /// No description provided for @sourceMayNotCarryIt.
+  ///
+  /// In en, this message translates to:
+  /// **'This source may not carry it. Try another.'**
+  String get sourceMayNotCarryIt;
+
+  /// No description provided for @currentMatchBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'CURRENT'**
+  String get currentMatchBadge;
 
   /// No description provided for @scheduleAndLists.
   ///

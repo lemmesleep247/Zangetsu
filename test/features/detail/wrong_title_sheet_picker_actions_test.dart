@@ -31,6 +31,11 @@ class _Src implements SourceRepository {
   final Map<String, List<MediaItem>> bySource;
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
   @override
   List<({String id, String name})> get pickableSources => loadedSources;
   @override
@@ -139,7 +144,9 @@ void main() {
     await t.tap(find.textContaining('HiAnime'));
     await t.pumpAndSettle();
     // The shared picker has no title row — its tabs identify it.
-    expect(find.text('Movies/Series'), findsOneWidget);
+    // One merged group, so the picker is identified by its All tab rather
+    // than by an Anime/Movies split that no longer exists.
+    expect(find.text('All'), findsOneWidget);
 
     // allanime is a JS provider with no site and no settings, so it gets no
     // overflow at all rather than an empty menu — ani:1's is the only one.
@@ -173,7 +180,9 @@ void main() {
     // The sheet is still open (only a row's own body pops it) and the
     // selection is untouched.
     // The shared picker has no title row — its tabs identify it.
-    expect(find.text('Movies/Series'), findsOneWidget);
+    // One merged group, so the picker is identified by its All tab rather
+    // than by an Anime/Movies split that no longer exists.
+    expect(find.text('All'), findsOneWidget);
     expect(prefs.get(fma.kind), before);
     expect(aniCalls.any((c) => c.method == 'openSourceSettings'), isTrue);
   });
@@ -258,6 +267,11 @@ void main() {
 class _NoopRepo implements CatalogueRepository {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
   @override
   Future<void> clearHttpCache() async {}
   @override

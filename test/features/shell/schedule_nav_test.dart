@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
+import 'package:watch_app/core/ui/dock_visibility.dart';
 import 'package:watch_app/core/appwrite/appwrite_service.dart';
 import 'package:watch_app/core/anilist/anilist_service.dart';
 import 'package:watch_app/core/announce/announcement.dart';
@@ -72,6 +73,11 @@ MigrationBridge _fakeBridge() => MigrationBridge(
 class _FakeSourceRepository implements SourceRepository {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
   @override
   List<({String id, String name})> get pickableSources => loadedSources;
 
@@ -98,6 +104,11 @@ class _FakeSourceRepository implements SourceRepository {
 class _FakeMyListStore implements MyListStore {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   List<MediaItem> all() => const [];
@@ -112,6 +123,11 @@ class _FakeMyListStore implements MyListStore {
 class _FakeSearchHistory implements SearchHistory {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   List<String> recent() => const [];
@@ -120,6 +136,11 @@ class _FakeSearchHistory implements SearchHistory {
 class _FakeSearchPrefs extends ChangeNotifier implements SearchPrefs {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   SearchLayout get layout => SearchLayout.vertical;
@@ -150,6 +171,11 @@ class _FakeSearchSourcePrefs extends ChangeNotifier
     implements SearchSourcePrefs {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   Set<String> get excluded => const {};
@@ -161,6 +187,11 @@ class _FakeSearchSourcePrefs extends ChangeNotifier
 class _FakeProviderRegistry implements ProviderRegistry {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   List<ProviderRegistryEntry> getAll() => const [];
@@ -178,6 +209,11 @@ class _FakeProviderRegistry implements ProviderRegistry {
 class _FakeAniListService extends ChangeNotifier implements AniListService {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   bool get isConnected => false;
@@ -195,6 +231,11 @@ class _FakeAniListService extends ChangeNotifier implements AniListService {
 class _FakeMalService extends ChangeNotifier implements MalService {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   bool get isConnected => false;
@@ -212,6 +253,11 @@ class _FakeMalService extends ChangeNotifier implements MalService {
 class _FakeSimklService extends ChangeNotifier implements SimklService {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   bool get isConnected => false;
@@ -409,6 +455,47 @@ void main() {
     expect(dockLabel('Sources'), findsOneWidget);
   });
 
+  // The dock collapses to icons on scroll (DockScrollCollapse). Two things a
+  // purely visual change quietly broke, and would break again:
+  testWidgets('every dock tab keeps a tappable box and a name', (tester) async {
+    sl.registerSingleton<AppMode>(const AppMode(isTv: false));
+    await tester.pumpWidget(wrap(const RootShell()));
+    await tester.pumpAndSettle();
+
+    // Scope to the dock — it is the only blurred pill in the tree.
+    final dock = find.byType(BackdropFilter);
+    expect(dock, findsOneWidget);
+
+    // A box worth aiming at — checked COLLAPSED, which is the state that
+    // regressed. Open, the item is 44 on its own (icon + label) and proves
+    // nothing; collapsed the label folds away and, without a minimum, the
+    // target fell to ~27 sitting right over the gesture bar.
+    final taps = find.descendant(of: dock, matching: find.byType(InkWell));
+    expect(taps, findsWidgets);
+    addTearDown(DockScrollCollapse.reset);
+    dockCollapsedByScroll.value = true;
+    await tester.pumpAndSettle();
+
+    for (var i = 0; i < taps.evaluate().length; i++) {
+      expect(
+        tester.getSize(taps.at(i)).height,
+        greaterThanOrEqualTo(48),
+        reason: 'collapsed dock tab $i must stay at least 48 tall to hit',
+      );
+    }
+
+    // A name a screen reader can read. The visible Text is excluded from
+    // semantics and folds to zero height when the dock collapses, so the name
+    // has to come from the item itself.
+    for (final name in const ['Home', 'My List', 'Sources', 'Profile']) {
+      expect(
+        find.descendant(of: dock, matching: find.bySemanticsLabel(name)),
+        findsWidgets,
+        reason: '"$name" must be announced by the dock',
+      );
+    }
+  });
+
   // Task 17: Search moved from the dock to the Home header (HomeSearchAction
   // — see home_search_action_test.dart). The dock itself should never offer
   // it, on the default tab set the app actually ships.
@@ -582,4 +669,9 @@ class _FiltersRepo implements MetadataRepository {
   bool get supportsFilters => supports;
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 }

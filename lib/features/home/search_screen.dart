@@ -70,8 +70,10 @@ import '../search/bloc/search_state.dart';
 ///
 /// [provided] wins outright: arriving from a genre tile means that tile's
 /// filters, not the screen's defaults.
-MetaFilters initialSearchFilters(MetaFilters? provided, bool privacyAllowsAdult) =>
-    provided ?? MetaFilters(adult: privacyAllowsAdult);
+MetaFilters initialSearchFilters(
+  MetaFilters? provided,
+  bool privacyAllowsAdult,
+) => provided ?? MetaFilters(adult: privacyAllowsAdult);
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({
@@ -137,57 +139,65 @@ class _SearchScreenState extends State<SearchScreen> {
     SearchScope.sources => sl<SourceRepository>(),
   };
 
+  Widget _searchTree(SearchScope scope) {
+    return BlocProvider(
+      key: ValueKey(scope),
+      create: (_) {
+        final bloc = SearchBloc(
+          repo: _repoForScope(scope),
+          history: sl<SearchHistory>(),
+          forceMode: widget.forceMode,
+        );
+        // SearchStarted only fetches the idle "Top picks" strip, which the
+        // metadata search no longer shows — Home already carries Trending,
+        // Popular and Recently released, and repeating them here cost a
+        // request per visit and showed the wrong mode's picks anyway (it
+        // was fetched once and cached for the life of the bloc).
+        if (scope != SearchScope.library) {
+          bloc.add(const SearchStarted());
+        }
+        final q = widget.initialQuery?.trim();
+        // An initial query (e.g. "see all results" from Home) runs the
+        // full search straight away rather than waiting for the user to
+        // type.
+        if (q != null && q.isNotEmpty) bloc.add(SearchRunRequested(q));
+        return bloc;
+      },
+      // On Android TV, hand off to the D-pad-optimised layout. The
+      // BlocProvider above is still the provider for both paths —
+      // SearchScreenTv reads the same SearchBloc from context, so no
+      // duplication of bloc creation.
+      child: sl<AppMode>().isTv
+          ? SearchScreenTv(
+              initialQuery: widget.initialQuery,
+              history: sl<SearchHistory>(),
+              scope: scope,
+              forceMode: widget.forceMode,
+            )
+          : _SearchView(
+              initialQuery: widget.initialQuery,
+              showBack: widget.showBack,
+              focusSignal: widget.focusSignal,
+              scope: scope,
+              forceMode: widget.forceMode,
+              initialFilters: widget.initialFilters,
+            ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Reactive to ZModePrefs.revision so a mode-bar pick (Sources vs a
+    // Phone: reactive to ZModePrefs.revision so a mode-bar pick (Sources vs a
     // content mode) rebuilds this with the right derived scope, recreating
     // the bloc via the ValueKey below — same pattern as HomeSourceSwitcherSlot.
+    // TV: skip that listen. The rail toggle bumps the same notifier, and
+    // rebuilding the offstage Search tab (results grid + bloc tree) while
+    // Home is visible is a multi-second hitch. [SearchScreenTv] skips
+    // stream-kind rebuilds unless the Search shell tab is active.
+    if (sl<AppMode>().isTv) return _searchTree(_scope);
     return ValueListenableBuilder<int>(
       valueListenable: ZModePrefs.revision,
-      builder: (context, _, _) {
-        final scope = _scope;
-        return BlocProvider(
-          key: ValueKey(scope),
-          create: (_) {
-            final bloc = SearchBloc(
-              repo: _repoForScope(scope),
-              history: sl<SearchHistory>(),
-              forceMode: widget.forceMode,
-            );
-            // SearchStarted only fetches the idle "Top picks" strip, which the
-            // metadata search no longer shows — Home already carries Trending,
-            // Popular and Recently released, and repeating them here cost a
-            // request per visit and showed the wrong mode's picks anyway (it
-            // was fetched once and cached for the life of the bloc).
-            if (scope != SearchScope.library) {
-              bloc.add(const SearchStarted());
-            }
-            final q = widget.initialQuery?.trim();
-            // An initial query (e.g. "see all results" from Home) runs the
-            // full search straight away rather than waiting for the user to
-            // type.
-            if (q != null && q.isNotEmpty) bloc.add(SearchRunRequested(q));
-            return bloc;
-          },
-          // On Android TV, hand off to the D-pad-optimised layout. The
-          // BlocProvider above is still the provider for both paths —
-          // SearchScreenTv reads the same SearchBloc from context, so no
-          // duplication of bloc creation.
-          child: sl<AppMode>().isTv
-              ? SearchScreenTv(
-                  initialQuery: widget.initialQuery,
-                  history: sl<SearchHistory>(),
-                )
-              : _SearchView(
-                  initialQuery: widget.initialQuery,
-                  showBack: widget.showBack,
-                  focusSignal: widget.focusSignal,
-                  scope: scope,
-                  forceMode: widget.forceMode,
-                  initialFilters: widget.initialFilters,
-                ),
-        );
-      },
+      builder: (context, _, _) => _searchTree(_scope),
     );
   }
 }
@@ -1396,14 +1406,14 @@ class _SearchViewState extends State<_SearchView>
       unselectedLabelColor: AppColors.textSecondary,
       // History uses 14.5 — sized down here since this row also hosts the
       // sort/filter icons and has less height to spend.
-      labelStyle: const TextStyle(
-        fontFamily: 'Inter',
+      labelStyle: TextStyle(
+        fontFamily: AppText.fontFamily,
         fontFamilyFallback: AppText.fontFamilyFallback,
         fontSize: 13,
         fontWeight: FontWeight.w700,
       ),
-      unselectedLabelStyle: const TextStyle(
-        fontFamily: 'Inter',
+      unselectedLabelStyle: TextStyle(
+        fontFamily: AppText.fontFamily,
         fontFamilyFallback: AppText.fontFamilyFallback,
         fontSize: 13,
         fontWeight: FontWeight.w600,
@@ -1822,6 +1832,7 @@ class _SearchViewState extends State<_SearchView>
                         headers: item.coverHeaders,
                         tags: _tagsFor(item),
                         qualityBadge: item.quality,
+                        scoreBadge: item.score,
                         dubBadge: item.dubBadge,
                         cellWidth: itemW,
                         onTap: () => _openDetail(item),
@@ -1881,6 +1892,7 @@ class _SearchViewState extends State<_SearchView>
                 headers: item.coverHeaders,
                 tags: _tagsFor(item),
                 qualityBadge: item.quality,
+                scoreBadge: item.score,
                 dubBadge: item.dubBadge,
                 cellWidth: cellW,
                 onTap: () => _openDetail(item),
@@ -2118,6 +2130,7 @@ class _SearchViewState extends State<_SearchView>
           headers: item.coverHeaders,
           tags: _tagsFor(item),
           qualityBadge: item.quality,
+          scoreBadge: item.score,
           dubBadge: item.dubBadge,
           cellWidth: cellW,
           onTap: () => _openDetail(item),
@@ -2128,7 +2141,8 @@ class _SearchViewState extends State<_SearchView>
   }
 
   /// Idle-screen section heading — the app's usual quiet label.
-  static const TextStyle _idleSectionTitle = AppText.overline;
+  // Not const: AppText's styles follow the user's font choice now.
+  static TextStyle get _idleSectionTitle => AppText.overline;
 
   // ── Idle view: recent searches + trending ─────────────────────────────────
   Widget _idleView(SearchState state) {
@@ -2302,6 +2316,7 @@ class _SearchViewState extends State<_SearchView>
                     headers: item.coverHeaders,
                     tags: _tagsFor(item),
                     qualityBadge: item.quality,
+                    scoreBadge: item.score,
                     dubBadge: item.dubBadge,
                     cellWidth: cellW,
                     onTap: () => _openDetail(item),

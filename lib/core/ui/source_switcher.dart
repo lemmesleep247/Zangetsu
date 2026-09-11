@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/material.dart';
 
 import '../aniyomi/aniyomi_provider.dart';
+import '../app_mode.dart';
 import '../di/injector.dart';
 import '../i18n/source_languages.dart';
 import '../lnreader/lnreader_manager.dart';
@@ -16,6 +18,8 @@ import '../provider/provider_manager.dart';
 import '../provider/provider_registry.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import '../tv/tv_focusable.dart';
+import '../tv/tv_list_focusable.dart';
 import '../zmode/zmode_ids.dart';
 import '../zmode/zmode_module.dart';
 import '../zmode/zmode_prefs.dart';
@@ -56,6 +60,14 @@ String? _repoLabelFromUrl(String? repoUrl) {
   }
 }
 
+/// A row's own name with its ecosystem tag ("CS · ", "Ani · ", "Z · ") taken
+/// off — for sorting and for the avatar letter, so a bucket orders by what the
+/// source is called rather than by which ecosystem it came from.
+String sourceRowName(String label) {
+  final i = label.indexOf('· ');
+  return (i == -1 ? label : label.substring(i + 2)).trim();
+}
+
 /// Buckets installed + enabled providers (JS + CloudStream) by manifest type.
 /// NSFW sources are kept separate and only surfaced when the Privacy toggle is
 /// on. CS rows are prefixed "CS · " and interleaved alphabetically. Each row's
@@ -73,10 +85,14 @@ SourceBuckets categorizedSources() {
         ? e.displayName as String
         : e.name as String;
     final repo = _repoLabelFromUrl(e.originRepoUrl as String?);
+    // No ecosystem tag: these ARE the app's own sources, and the repo line
+    // underneath already says where they came from.
     return (id: e.name as String, label: base, repo: repo);
   }
-  int byLabel(a, b) =>
-      row(a).label.toLowerCase().compareTo(row(b).label.toLowerCase());
+
+  int byLabel(a, b) => sourceRowName(
+    row(a).label,
+  ).toLowerCase().compareTo(sourceRowName(row(b).label).toLowerCase());
 
   final enabled = reg.getAll().where((e) => e.enabled).toList();
   final anime = <({String id, String label, String? repo})>[];
@@ -114,8 +130,15 @@ SourceBuckets categorizedSources() {
   // Loaded CloudStream plugins. No NSFW flag, so they only ever land in the
   // anime or movies buckets. Sort each combined bucket by label so CS rows
   // interleave alphabetically with the JS rows rather than trailing them.
-  int byRowLabel(({String id, String label, String? repo}) a, ({String id, String label, String? repo}) b) =>
-      a.label.toLowerCase().compareTo(b.label.toLowerCase());
+  // By NAME, not by the tagged label — sorting on "CS · …" clustered every
+  // CloudStream row under C, which is the opposite of the interleaving this
+  // comment has always claimed.
+  int byRowLabel(
+    ({String id, String label, String? repo}) a,
+    ({String id, String label, String? repo}) b,
+  ) => sourceRowName(
+    a.label,
+  ).toLowerCase().compareTo(sourceRowName(b.label).toLowerCase());
   final mgr = sl<CloudStreamManager>();
   // Map each CS source to its origin repo's name, for the repo tag.
   // Best-effort: a repo tag must NEVER stop the picker from opening.
@@ -127,14 +150,12 @@ SourceBuckets categorizedSources() {
         csRepoById[s.sourceId] = g.name;
       }
     }
-  } catch (_) {/* tags are cosmetic */}
+  } catch (_) {
+    /* tags are cosmetic */
+  }
   for (final p in mgr.enabled) {
     final repo = csRepoById[p.sourceId];
-    final csRow = (
-      id: p.sourceId,
-      label: 'CS · ${p.displayName}',
-      repo: repo,
-    );
+    final csRow = (id: p.sourceId, label: 'CS · ${p.displayName}', repo: repo);
     if (p.providerType == ProviderType.anime) {
       anime.add(csRow);
     } else {
@@ -146,7 +167,11 @@ SourceBuckets categorizedSources() {
   final showNsfwAni = sl<PlaybackPrefs>().showNsfwAniyomi;
   for (final p in sl<AniyomiManager>().all) {
     if (!aniyomiNsfwVisible(p, showNsfwAniyomi: showNsfwAni)) continue;
-    anime.add((id: p.sourceId, label: 'Ani · ${p.displayName}', repo: 'Aniyomi'));
+    anime.add((
+      id: p.sourceId,
+      label: 'Ani · ${p.displayName}',
+      repo: 'Aniyomi',
+    ));
   }
   // Mihon providers — always manga; keyed by their `mihon:` sourceId. Only the
   // manga bucket, never anime/movies/nsfw, so TvSourcePicker (which reads
@@ -210,7 +235,10 @@ ProviderType sourceTypeOf(String id) {
   // fall under `anime` here since ContentMode.anime.matchesProvider accepts
   // either; the caller only needs to know which ContentMode bucket it's in.
   if (id == ZmodeIds.sourceId) {
-    return switch (browseKindFor(sl<ContentModeCubit>().state, ZModePrefs.streamKind)) {
+    return switch (browseKindFor(
+      sl<ContentModeCubit>().state,
+      ZModePrefs.streamKind,
+    )) {
       ZKind.manga => ProviderType.manga,
       ZKind.novel => ProviderType.novel,
       ZKind.anime || ZKind.movie || ZKind.tv => ProviderType.anime,
@@ -262,6 +290,36 @@ ProviderType _typeOfFromMap(String id, Map<String, String> typeMap) {
   return ProviderType.values.asNameMap()[t] ?? ProviderType.anime;
 }
 
+/// Splits video rows by the ecosystem they came from — Zangetsu's own JS
+/// providers, CloudStream plugins, Aniyomi extensions — in that order, with
+/// empty ones dropped.
+///
+/// The id prefix is the truth here (`cs:`, `ani:`, `mihon:`, `lnr:`), the same
+/// routing every other part of the app uses, rather than the "CS · " label
+/// text which is only for reading.
+List<({String title, List<({String id, String label, String? repo})> rows})>
+ecosystemTabs(List<({String id, String label, String? repo})> rows) {
+  bool isCs(String id) => id.startsWith('cs:');
+  bool isAni(String id) => id.startsWith('ani:');
+  final zangetsu = [
+    for (final r in rows)
+      if (!isCs(r.id) && !isAni(r.id)) r,
+  ];
+  final cs = [
+    for (final r in rows)
+      if (isCs(r.id)) r,
+  ];
+  final ani = [
+    for (final r in rows)
+      if (isAni(r.id)) r,
+  ];
+  return [
+    if (zangetsu.isNotEmpty) (title: 'Zangetsu', rows: zangetsu),
+    if (cs.isNotEmpty) (title: 'CloudStream', rows: cs),
+    if (ani.isNotEmpty) (title: 'Aniyomi', rows: ani),
+  ];
+}
+
 /// Narrows a [SourceBuckets] to the rows visible in [mode]. A no-op in anime
 /// mode for today's real source sets (anime/movie are the only types in use),
 /// so the picker and search show exactly what they show today.
@@ -280,7 +338,9 @@ SourceBuckets filterBucketsForMode(SourceBuckets buckets, ContentMode mode) {
   // picker/search.
   List<({String id, String label, String? repo})> filter(
     List<({String id, String label, String? repo})> rows,
-  ) => rows.where((r) => mode.matchesProvider(_typeOfFromMap(r.id, typeMap))).toList();
+  ) => rows
+      .where((r) => mode.matchesProvider(_typeOfFromMap(r.id, typeMap)))
+      .toList();
 
   return (
     anime: filter(buckets.anime),
@@ -321,12 +381,21 @@ bool hasReadingSourcesFor(ContentMode mode) {
 bool hasSourcesFor(ContentMode mode) {
   try {
     final b = filterBucketsForMode(categorizedSources(), mode);
-    return b.anime.isNotEmpty ||
+    final result =
+        b.anime.isNotEmpty ||
         b.movies.isNotEmpty ||
         b.nsfw.isNotEmpty ||
         b.manga.isNotEmpty ||
         b.novel.isNotEmpty;
-  } catch (_) {
+    debugPrint(
+      '[source-switcher] hasSourcesFor($mode) → $result '
+      '(anime=${b.anime.length} movies=${b.movies.length} '
+      'nsfw=${b.nsfw.length} manga=${b.manga.length} '
+      'novel=${b.novel.length})',
+    );
+    return result;
+  } catch (e) {
+    debugPrint('[source-switcher] hasSourcesFor($mode) → catch → true · $e');
     return true;
   }
 }
@@ -423,50 +492,59 @@ class SourceSwitcher extends StatelessWidget {
     // colored ecosystem tag, then the source name. Hugs the text — but capped
     // at 150px so a long name ellipsizes inside instead of growing the
     // capsule and squeezing the wordmark on the left.
-    return GestureDetector(
-      onTap: () => showPicker(context),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 150),
-        padding: const EdgeInsets.fromLTRB(11, 4, 7, 4),
-        decoration: BoxDecoration(
-          border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              tag,
-              style: TextStyle(
-                fontSize: 9,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.4,
-                color: tagColor,
+    final chip = Container(
+      constraints: const BoxConstraints(maxWidth: 150),
+      padding: const EdgeInsets.fromLTRB(11, 4, 7, 4),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            tag,
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.4,
+              color: tagColor,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.body.copyWith(
+                fontSize: 12.5,
+                color: AppColors.textPrimary,
+                fontWeight: FontWeight.w600,
               ),
             ),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppText.body.copyWith(
-                  fontSize: 12.5,
-                  color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            const SizedBox(width: 3),
-            const Icon(
-              Icons.keyboard_arrow_down,
-              size: 15,
-              color: AppColors.textSecondary,
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(width: 3),
+          const Icon(
+            Icons.keyboard_arrow_down,
+            size: 15,
+            color: AppColors.textSecondary,
+          ),
+        ],
       ),
     );
+    final isTv = sl.isRegistered<AppMode>() && sl<AppMode>().isTv;
+    if (isTv) {
+      return TvFocusable(
+        onTap: () => showPicker(context),
+        variant: TvFocusVariant.float,
+        scale: 1.02,
+        borderRadius: 14,
+        semanticLabel: name,
+        child: ExcludeSemantics(child: chip),
+      );
+    }
+    return GestureDetector(onTap: () => showPicker(context), child: chip);
   }
 
   /// Opens the shared source picker (tabbed anime/movies list with CS·/Ani·
@@ -476,6 +554,8 @@ class SourceSwitcher extends StatelessWidget {
     BuildContext context, {
     Widget? Function(String id)? trailingBuilder,
     void Function(String id)? onPick,
+    VoidCallback? onAutoResolve,
+    bool autoSelected = false,
   }) {
     final mode = sl<ContentModeCubit>().state;
     final b = filterBucketsForMode(_buckets(), mode);
@@ -495,9 +575,9 @@ class SourceSwitcher extends StatelessWidget {
     // Search only earns its space once there's a list worth filtering.
     final showSearch = total > 6;
     final searchH = showSearch ? 56 : 0;
-    final sheetH =
-        (24 + 48 + searchH + (total + headers) * 52 + 24)
-            .clamp(240.0, screenH * 0.85);
+    final autoRowH = onAutoResolve != null ? 60 : 0;
+    final sheetH = (24 + 48 + searchH + autoRowH + (total + headers) * 52 + 24)
+        .clamp(240.0, screenH * 0.85);
 
     showModalBottomSheet<void>(
       context: context,
@@ -514,6 +594,13 @@ class SourceSwitcher extends StatelessWidget {
         showSearch: showSearch,
         mode: mode,
         onInstallSources: onInstallSources,
+        autoSelected: autoSelected,
+        onAutoResolve: onAutoResolve == null
+            ? null
+            : () {
+                Navigator.of(ctx).pop();
+                onAutoResolve();
+              },
         onChoose: (id) {
           Navigator.of(ctx).pop();
           // onPick lets a caller (Z Mode's per-title selector) consume the
@@ -547,6 +634,8 @@ class _SourcePickerSheet extends StatefulWidget {
     required this.onChoose,
     this.onInstallSources,
     this.trailingBuilder,
+    this.onAutoResolve,
+    this.autoSelected = false,
   });
 
   final SourceBuckets buckets;
@@ -558,6 +647,13 @@ class _SourcePickerSheet extends StatefulWidget {
   final VoidCallback? onInstallSources;
   final Widget? Function(String id)? trailingBuilder;
 
+  /// When set, an "Auto Resolve" row is shown above the tabs — Z Mode's
+  /// per-title selector only.
+  final VoidCallback? onAutoResolve;
+
+  /// True when Auto Resolve is the active pick for this title.
+  final bool autoSelected;
+
   @override
   State<_SourcePickerSheet> createState() => _SourcePickerSheetState();
 }
@@ -565,6 +661,8 @@ class _SourcePickerSheet extends StatefulWidget {
 class _SourcePickerSheetState extends State<_SourcePickerSheet> {
   final _searchCtrl = TextEditingController();
   String _query = '';
+
+  bool get _isTv => sl.isRegistered<AppMode>() && sl<AppMode>().isTv;
 
   @override
   void dispose() {
@@ -574,21 +672,41 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
 
   List<({String id, String label, String? repo})> _filter(
     List<({String id, String label, String? repo})> rows,
-  ) =>
-      [for (final s in rows) if (_sourcePickerMatches(_query, s.label, s.repo)) s];
+  ) => [
+    for (final s in rows)
+      if (_sourcePickerMatches(_query, s.label, s.repo)) s,
+  ];
 
-  Widget _rowFor(({String id, String label, String? repo}) src) => _SourceRow(
-        label: src.label,
-        repo: src.repo,
-        isActive: src.id == widget.currentId,
-        isPinned: PinnedSources.isPinned(src.id),
-        trailing: widget.trailingBuilder?.call(src.id),
-        onTap: () => widget.onChoose(src.id),
-        onLongPress: () async {
-          await PinnedSources.toggle(src.id);
-          if (mounted) setState(() {});
-        },
+  Widget _rowFor(
+    ({String id, String label, String? repo}) src, {
+    bool autofocus = false,
+  }) {
+    final trailing = widget.trailingBuilder?.call(src.id);
+    final row = _SourceRow(
+      label: src.label,
+      repo: src.repo,
+      isActive: !widget.autoSelected && src.id == widget.currentId,
+      isPinned: PinnedSources.isPinned(src.id),
+      // On TV trailing actions are siblings beside the row so D-pad can
+      // reach them without nesting focus inside the source TvListFocusable.
+      trailing: _isTv ? null : trailing,
+      autofocus: autofocus,
+      onTap: () => widget.onChoose(src.id),
+      onLongPress: () async {
+        await PinnedSources.toggle(src.id);
+        if (mounted) setState(() {});
+      },
+    );
+    if (_isTv && trailing != null) {
+      return Row(
+        children: [
+          Expanded(child: row),
+          trailing,
+        ],
       );
+    }
+    return row;
+  }
 
   Widget _empty(String message) =>
       EmptyState(icon: Icons.source_outlined, message: message);
@@ -599,16 +717,61 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
   /// here regardless of whether [onInstallSources] is wired.
   Widget _installCta() {
     final install = widget.onInstallSources;
+    void openInstall() {
+      Navigator.of(context).pop();
+      install!();
+    }
+
+    if (_isTv && install != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.source_outlined,
+              size: 48,
+              color: AppColors.textTertiary,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'No ${widget.mode.label} sources yet',
+              textAlign: TextAlign.center,
+              style: AppText.body,
+            ),
+            const SizedBox(height: 16),
+            TvFocusable(
+              autofocus: true,
+              variant: TvFocusVariant.pill,
+              onTap: openInstall,
+              semanticLabel: 'Browse repositories',
+              builder: (focused) => DecoratedBox(
+                decoration: BoxDecoration(
+                  color: focused ? Colors.white : AppColors.accent,
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 12,
+                  ),
+                  child: Text(
+                    'Browse repositories',
+                    style: AppText.button.copyWith(
+                      color: focused ? Colors.black : Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return EmptyState(
       icon: Icons.source_outlined,
       message: 'No ${widget.mode.label} sources yet',
       actionLabel: install == null ? null : 'Browse repositories',
-      onAction: install == null
-          ? null
-          : () {
-              Navigator.of(context).pop();
-              install();
-            },
+      onAction: install == null ? null : openInstall,
     );
   }
 
@@ -623,10 +786,24 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
       ...rows.where((s) => PinnedSources.isPinned(s.id)),
       ...rows.where((s) => !PinnedSources.isPinned(s.id)),
     ];
+    final focusId = _autofocusSourceId(sorted);
+    var focusGiven = false;
     return ListView(
-      shrinkWrap: true,
+      shrinkWrap: !_isTv,
       padding: EdgeInsets.zero,
-      children: [for (final s in sorted) _rowFor(s)],
+      children: [
+        for (final s in sorted)
+          _rowFor(
+            s,
+            autofocus: () {
+              if (focusGiven || focusId == null || s.id != focusId) {
+                return false;
+              }
+              focusGiven = true;
+              return true;
+            }(),
+          ),
+      ],
     );
   }
 
@@ -643,11 +820,46 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
       ...rows.where((s) => PinnedSources.isPinned(s.id)),
       ...rows.where((s) => !PinnedSources.isPinned(s.id)),
     ];
+    final focusId = _autofocusSourceId(sorted);
+    var focusGiven = false;
     return ListView(
-      shrinkWrap: true,
+      shrinkWrap: !_isTv,
       padding: EdgeInsets.zero,
-      children: [for (final s in sorted) _rowFor(s)],
+      children: [
+        for (final s in sorted)
+          _rowFor(
+            s,
+            autofocus: () {
+              if (focusGiven || focusId == null || s.id != focusId) {
+                return false;
+              }
+              focusGiven = true;
+              return true;
+            }(),
+          ),
+      ],
     );
+  }
+
+  /// Anime and Movies/Series as ONE list. They were split by the type a
+  /// source declares, which is not the question being asked here — plenty
+  /// carry both, the pool is shared, and hunting for a source under a heading
+  /// that guessed wrong is worse than one alphabetical list. NSFW stays
+  /// separate: that split is deliberate and gated on the Privacy toggle.
+  List<({String id, String label, String? repo})> get _video => [
+    ...widget.buckets.anime,
+    ...widget.buckets.movies,
+  ]..sort((x, y) => x.label.toLowerCase().compareTo(y.label.toLowerCase()));
+
+  /// Source id that should receive autofocus on TV — current selection if
+  /// present, else the first row. Null when Auto Resolve owns autofocus.
+  String? _autofocusSourceId(
+    List<({String id, String label, String? repo})> rows,
+  ) {
+    if (!_isTv || rows.isEmpty) return null;
+    if (widget.autoSelected && widget.onAutoResolve != null) return null;
+    if (rows.any((s) => s.id == widget.currentId)) return widget.currentId;
+    return rows.first.id;
   }
 
   // The "All" tab: each (filtered) bucket under its own header. Anime mode
@@ -658,19 +870,21 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
     final b = widget.buckets;
     final mode = widget.mode;
     Widget header(String t) => Padding(
-          padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
-          child: Text(
-            t.toUpperCase(),
-            style: AppText.overline.copyWith(color: AppColors.textTertiary),
-          ),
-        );
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+      child: Text(
+        t.toUpperCase(),
+        style: AppText.overline.copyWith(color: AppColors.textTertiary),
+      ),
+    );
+    final video = _video;
     final categories = mode.isReading
-        ? [(title: mode.label, rows: mode == ContentMode.manga ? b.manga : b.novel)]
-        : [
-            (title: 'Anime', rows: b.anime),
-            (title: 'Movies & Series', rows: b.movies),
-            (title: 'NSFW', rows: b.nsfw),
-          ];
+        ? [
+            (
+              title: mode.label,
+              rows: mode == ContentMode.manga ? b.manga : b.novel,
+            ),
+          ]
+        : [(title: 'Sources', rows: video), (title: 'NSFW', rows: b.nsfw)];
     // Pinned first (in pin order, from any bucket); drop them from the category
     // groups below so they aren't listed twice.
     final pinnedIds = PinnedSources.notifier.value;
@@ -680,23 +894,41 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
     ]);
     bool unpinned(({String id, String label, String? repo}) s) =>
         !pinnedIds.contains(s.id);
+    final focusCandidates = <({String id, String label, String? repo})>[
+      ...pinned,
+      for (final c in categories) ..._filter(c.rows.where(unpinned).toList()),
+    ];
+    final focusId = _autofocusSourceId(focusCandidates);
+    var focusGiven = false;
+    bool takeFocus(({String id, String label, String? repo}) s) {
+      if (focusGiven || focusId == null || s.id != focusId) return false;
+      focusGiven = true;
+      return true;
+    }
+
     final children = <Widget>[];
     if (pinned.isNotEmpty) {
       children.add(header('Pinned'));
-      children.addAll(pinned.map(_rowFor));
+      children.addAll(pinned.map((s) => _rowFor(s, autofocus: takeFocus(s))));
     }
     for (final c in categories) {
       final rows = _filter(c.rows.where(unpinned).toList());
       if (rows.isNotEmpty) {
         children.add(header(c.title));
-        children.addAll(rows.map(_rowFor));
+        children.addAll(rows.map((s) => _rowFor(s, autofocus: takeFocus(s))));
       }
     }
     if (children.isEmpty) {
       if (mode.isReading && _query.trim().isEmpty) return _installCta();
-      return _empty(_query.trim().isEmpty ? 'No enabled sources' : 'No matches');
+      return _empty(
+        _query.trim().isEmpty ? 'No enabled sources' : 'No matches',
+      );
     }
-    return ListView(shrinkWrap: true, padding: EdgeInsets.zero, children: children);
+    return ListView(
+      shrinkWrap: !_isTv,
+      padding: EdgeInsets.zero,
+      children: children,
+    );
   }
 
   /// True if there's at least one source relevant to the current mode —
@@ -708,6 +940,44 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
       return (widget.mode == ContentMode.manga ? b.manga : b.novel).isNotEmpty;
     }
     return b.anime.isNotEmpty || b.movies.isNotEmpty || b.nsfw.isNotEmpty;
+  }
+
+  Widget _autoResolveRow() {
+    final body = Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+      child: Row(
+        children: [
+          Icon(Icons.auto_awesome_rounded, color: AppColors.accent, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Auto Resolve', style: AppText.headline),
+                Text(
+                  'Try every installed source until one matches',
+                  style: AppText.caption.copyWith(
+                    color: AppColors.textTertiary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (widget.autoSelected)
+            Icon(Icons.check, color: AppColors.accent, size: 20),
+        ],
+      ),
+    );
+    if (_isTv) {
+      return TvListFocusable(
+        autofocus: widget.autoSelected,
+        onTap: widget.onAutoResolve!,
+        semanticLabel: 'Auto Resolve',
+        child: ExcludeSemantics(child: body),
+      );
+    }
+    return InkWell(onTap: widget.onAutoResolve, child: body);
   }
 
   @override
@@ -723,17 +993,71 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
     final tabs = <({String title, Widget Function() body})>[
       if (!mode.isReading) ...[
         (title: 'All', body: _grouped),
-        (title: 'Anime', body: () => _flat(b.anime)),
-        (title: 'Movies/Series', body: () => _flat(b.movies)),
+        // By WHERE a source came from, not by the content type it declared.
+        // The old Anime / Movies-Series tabs cut the list by something the
+        // source claimed about itself, which is not how anyone looks for one;
+        // "it's one of my CloudStream ones" is. A tab only appears when it has
+        // something in it.
+        for (final eco in ecosystemTabs(_video))
+          (title: eco.title, body: () => _flat(eco.rows)),
         if (b.nsfw.isNotEmpty) (title: 'NSFW', body: () => _flat(b.nsfw)),
       ] else ...[
         (title: 'All', body: _grouped),
         (
           title: mode.label,
-          body: () => _readingFlat(mode == ContentMode.manga ? b.manga : b.novel),
+          body: () =>
+              _readingFlat(mode == ContentMode.manga ? b.manga : b.novel),
         ),
       ],
     ];
+
+    // TV: one grouped list (no TabBar / TextField). Tabs and search steal or
+    // eat D-pad focus; the phone sheet keeps both.
+    if (_isTv) {
+      return SafeArea(
+        child: SizedBox(
+          height: widget.height,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Select Source',
+                    style: AppText.title.copyWith(color: AppColors.textPrimary),
+                  ),
+                ),
+              ),
+              if (widget.onAutoResolve != null) ...[
+                _autoResolveRow(),
+                const Divider(height: 1, color: AppColors.hairline),
+              ],
+              Expanded(child: _grouped()),
+              if (PinnedSources.notifier.value.isEmpty && _hasAnySources)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 6, 20, 10),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.push_pin_outlined,
+                        size: 13,
+                        color: AppColors.textTertiary,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Hold Select to pin a source to the top',
+                        style: AppText.caption,
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return SafeArea(
       child: SizedBox(
@@ -751,6 +1075,10 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
+              if (widget.onAutoResolve != null) ...[
+                _autoResolveRow(),
+                const Divider(height: 1, color: AppColors.hairline),
+              ],
               if (widget.showSearch)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
@@ -822,13 +1150,19 @@ class _PickerSearchField extends StatelessWidget {
       decoration: InputDecoration(
         hintText: 'Search sources',
         hintStyle: AppText.body.copyWith(color: AppColors.textSecondary),
-        prefixIcon:
-            const Icon(Icons.search, color: AppColors.textSecondary, size: 20),
+        prefixIcon: const Icon(
+          Icons.search,
+          color: AppColors.textSecondary,
+          size: 20,
+        ),
         suffixIcon: controller.text.isEmpty
             ? null
             : IconButton(
-                icon: const Icon(Icons.close,
-                    color: AppColors.textSecondary, size: 18),
+                icon: const Icon(
+                  Icons.close,
+                  color: AppColors.textSecondary,
+                  size: 18,
+                ),
                 tooltip: 'Clear',
                 onPressed: () {
                   controller.clear();
@@ -838,8 +1172,10 @@ class _PickerSearchField extends StatelessWidget {
         isDense: true,
         filled: true,
         fillColor: AppColors.surface2,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide.none,
@@ -860,6 +1196,7 @@ class _SourceRow extends StatelessWidget {
     required this.onTap,
     this.repo,
     this.isPinned = false,
+    this.autofocus = false,
     this.onLongPress,
     this.trailing,
   });
@@ -870,6 +1207,7 @@ class _SourceRow extends StatelessWidget {
   final String? repo;
   final bool isActive;
   final bool isPinned;
+  final bool autofocus;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
 
@@ -881,34 +1219,28 @@ class _SourceRow extends StatelessWidget {
   /// prefix ("CS · ", "Ani · ") is stripped first, or every CloudStream row
   /// would read "C".
   String get _initial {
-    final i = label.indexOf('· ');
-    final name = (i == -1 ? label : label.substring(i + 2)).trim();
+    final name = sourceRowName(label);
     return name.isEmpty ? '?' : name.characters.first.toUpperCase();
   }
 
   @override
   Widget build(BuildContext context) {
     final hasRepo = repo != null && repo!.isNotEmpty;
-    return InkWell(
-      onTap: onTap,
-      onLongPress: onLongPress,
-      splashColor: AppColors.accent.withValues(alpha: 0.08),
-      highlightColor: AppColors.accent.withValues(alpha: 0.04),
-      child: DecoratedBox(
-        // Selected row: accent bar down the leading edge plus a wash, instead
-        // of a tick stranded on the far right of a wide row.
-        decoration: BoxDecoration(
-          color: isActive
-              ? AppColors.accent.withValues(alpha: 0.10)
-              : Colors.transparent,
-          border: Border(
-            left: BorderSide(
-              color: isActive ? AppColors.accent : Colors.transparent,
-              width: 3,
-            ),
+    final body = DecoratedBox(
+      // Selected row: accent bar down the leading edge plus a wash, instead
+      // of a tick stranded on the far right of a wide row.
+      decoration: BoxDecoration(
+        color: isActive
+            ? AppColors.accent.withValues(alpha: 0.10)
+            : Colors.transparent,
+        border: Border(
+          left: BorderSide(
+            color: isActive ? AppColors.accent : Colors.transparent,
+            width: 3,
           ),
         ),
-        child: Padding(
+      ),
+      child: Padding(
         padding: const EdgeInsets.fromLTRB(17, 11, 20, 11),
         child: Row(
           children: [
@@ -923,7 +1255,9 @@ class _SourceRow extends StatelessWidget {
               alignment: Alignment.center,
               child: Text(
                 _initial,
-                style: AppText.headline.copyWith(color: AppColors.textSecondary),
+                style: AppText.headline.copyWith(
+                  color: AppColors.textSecondary,
+                ),
               ),
             ),
             Expanded(
@@ -949,7 +1283,9 @@ class _SourceRow extends StatelessWidget {
             ),
             if (isPinned)
               Padding(
-                padding: EdgeInsets.only(right: isActive ? 10 : 0),
+                padding: EdgeInsets.only(
+                  right: isActive || trailing != null ? 10 : 0,
+                ),
                 child: Icon(
                   Icons.push_pin,
                   size: 15,
@@ -959,8 +1295,25 @@ class _SourceRow extends StatelessWidget {
             ?trailing,
           ],
         ),
-        ),
       ),
+    );
+
+    final isTv = sl.isRegistered<AppMode>() && sl<AppMode>().isTv;
+    if (isTv) {
+      return TvListFocusable(
+        autofocus: autofocus,
+        onTap: onTap,
+        onLongPress: onLongPress,
+        semanticLabel: label,
+        child: ExcludeSemantics(child: body),
+      );
+    }
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      splashColor: AppColors.accent.withValues(alpha: 0.08),
+      highlightColor: AppColors.accent.withValues(alpha: 0.04),
+      child: body,
     );
   }
 }

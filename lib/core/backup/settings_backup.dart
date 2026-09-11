@@ -42,7 +42,9 @@ class SettingsBackup {
     'source_domain_overrides', // per-source domain the user set by hand
     'zmode_source', // which source plays each kind in Zangetsu Mode
     'metadata_provider', // AniList vs MAL for anime metadata
+    'app_font_prefs', // the UI font
     'home_rows_prefs', // per-layout home row order + visibility
+    'zmode_source_order', // Source Priority: which source Auto Resolve tries first
   ];
 
   /// Returns a map of `{boxName: {key: value, ...}}` for every open box.

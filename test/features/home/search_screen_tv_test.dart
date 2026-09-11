@@ -8,9 +8,12 @@ import 'package:watch_app/core/models/media_item.dart';
 import 'package:watch_app/core/models/provider_info.dart';
 import 'package:watch_app/core/playback/search_history.dart';
 import 'package:watch_app/core/playback/search_prefs.dart';
+import 'package:watch_app/core/playback/search_scope.dart';
 import 'package:watch_app/core/repository/source_repository.dart';
 import 'package:watch_app/core/search/title_suggestion_service.dart';
+import 'package:get_it/get_it.dart';
 import 'package:watch_app/core/tv/tv_focusable.dart';
+import 'package:watch_app/core/zmode/metadata_repository.dart';
 import 'package:watch_app/features/home/search_screen_tv.dart';
 import 'package:watch_app/features/search/bloc/search_bloc.dart';
 import 'package:watch_app/features/search/bloc/search_state.dart';
@@ -82,6 +85,11 @@ class _StubSuggestions extends TitleSuggestionService {
 class _StubSourceRepository implements SourceRepository {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
   @override
   List<({String id, String name})> get pickableSources => loadedSources;
 
@@ -126,11 +134,28 @@ class _FakeSearchBloc extends SearchBloc {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-Widget _buildUnderTest(_FakeSearchBloc bloc, {SearchHistory? history}) =>
+Widget _buildUnderTest(
+  _FakeSearchBloc bloc, {
+  SearchHistory? history,
+  SearchScope scope = SearchScope.sources,
+}) =>
     BlocProvider<SearchBloc>.value(
       value: bloc,
-      child: MaterialApp(home: SearchScreenTv(history: history)),
+      child: MaterialApp(
+        home: SearchScreenTv(history: history, scope: scope),
+      ),
     );
+
+/// The Genres entry reads only [MetadataRepository.supportsFilters]; stubbing
+/// the rest would be fiction. Same shape as schedule_nav_test's _FiltersRepo.
+class _FiltersRepo implements MetadataRepository {
+  _FiltersRepo({this.supports = true});
+  final bool supports;
+  @override
+  bool get supportsFilters => supports;
+  @override
+  noSuchMethod(Invocation i) => super.noSuchMethod(i);
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -149,6 +174,53 @@ void main() {
     type: ProviderType.anime,
     sourceId: 'test',
   );
+
+  group('Genres entry (restored after 097192ba dropped it)', () {
+    tearDown(GetIt.I.reset);
+
+    testWidgets('appears on the idle body when the catalogue can filter', (
+      tester,
+    ) async {
+      GetIt.I.registerSingleton<MetadataRepository>(_FiltersRepo());
+      final bloc = _FakeSearchBloc(SearchState(status: SearchStatus.idle));
+      addTearDown(bloc.close);
+
+      await tester.pumpWidget(_buildUnderTest(bloc));
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('tv-search-genres')), findsOneWidget);
+      expect(find.text('Genres'), findsOneWidget);
+    });
+
+    testWidgets('still reachable once there are recent searches', (
+      tester,
+    ) async {
+      GetIt.I.registerSingleton<MetadataRepository>(_FiltersRepo());
+      final bloc = _FakeSearchBloc(SearchState(status: SearchStatus.idle));
+      addTearDown(bloc.close);
+
+      await tester.pumpWidget(
+        _buildUnderTest(bloc, history: _MutableSearchHistory(['naruto'])),
+      );
+      await tester.pump();
+
+      // main only drew it on the empty branch, so one search hid it for good.
+      expect(find.byKey(const ValueKey('tv-search-genres')), findsOneWidget);
+    });
+
+    testWidgets('hidden when the catalogue cannot filter', (tester) async {
+      GetIt.I.registerSingleton<MetadataRepository>(
+        _FiltersRepo(supports: false),
+      );
+      final bloc = _FakeSearchBloc(SearchState(status: SearchStatus.idle));
+      addTearDown(bloc.close);
+
+      await tester.pumpWidget(_buildUnderTest(bloc));
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('tv-search-genres')), findsNothing);
+    });
+  });
 
   testWidgets(
     'SearchScreenTv renders an autofocus-capable search field',
@@ -289,7 +361,7 @@ void main() {
           child: MaterialApp(
             home: MediaQuery(
               data: const MediaQueryData(accessibleNavigation: false),
-              child: const SearchScreenTv(),
+              child: const SearchScreenTv(scope: SearchScope.sources),
             ),
           ),
         ),
@@ -326,7 +398,7 @@ void main() {
           child: MaterialApp(
             home: MediaQuery(
               data: const MediaQueryData(accessibleNavigation: true),
-              child: const SearchScreenTv(),
+              child: const SearchScreenTv(scope: SearchScope.sources),
             ),
           ),
         ),

@@ -142,9 +142,7 @@ class TrackerContinueSection extends StatelessWidget {
         caption: trackerContinueCaption(c, items[i]),
         captionColor: AppColors.textSecondary,
         onTap: () => onOpen(items[i]),
-        onLongPress: onLongPress == null
-            ? null
-            : () => onLongPress!(items[i]),
+        onLongPress: onLongPress == null ? null : () => onLongPress!(items[i]),
       ),
     );
   }
@@ -196,9 +194,7 @@ class NewEpisodesSection extends StatelessWidget {
           releasedCount(items[i]) - (items[i].progress ?? 0),
         ),
         onTap: () => onOpen(items[i]),
-        onLongPress: onLongPress == null
-            ? null
-            : () => onLongPress!(items[i]),
+        onLongPress: onLongPress == null ? null : () => onLongPress!(items[i]),
       ),
     );
   }
@@ -313,8 +309,8 @@ class _WaitingBadge extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       child: Text(
         '+$count',
-        style: const TextStyle(
-          fontFamily: 'Inter',
+        style: TextStyle(
+          fontFamily: AppText.fontFamily,
           fontFamilyFallback: AppText.fontFamilyFallback,
           fontSize: 10,
           height: 1.2,

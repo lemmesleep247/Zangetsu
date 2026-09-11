@@ -38,6 +38,7 @@ import '../../core/playback/subtitle_download_service.dart';
 import '../../core/playback/subtitle_translate_service.dart';
 import '../../core/repository/catalogue_repository.dart';
 import '../../core/repository/source_repository.dart';
+import '../../core/zmode/playback_resolver.dart';
 import '../../core/zmode/source_matcher.dart';
 import '../../core/zmode/zmode_ids.dart';
 import '../watch_together/model/room_state.dart';
@@ -386,6 +387,16 @@ class PlayerCubit extends Cubit<PlayerState> {
   // reason to cycle sources (which spuriously showed "No source could be
   // played" over working playback and broke the watch-progress scrobble).
   bool _startedThisSource = false;
+
+  /// True once ANY source has actually produced picture in this player
+  /// session, unlike [_startedThisSource] which resets on every source switch.
+  ///
+  /// Read by [PlayerScreen] to tell the two failures apart: nothing ever
+  /// played (the episode is a dead end — hand the viewer back to Detail with
+  /// an answer) versus playback died partway (they are watching something;
+  /// keep them here with the in-place error and Retry).
+  bool _everStarted = false;
+  bool get everStarted => _everStarted;
 
   // Stall watchdog: a STARTED source that dies/stalls mid-playback (dead host,
   // pulled segment) buffers forever — _onPlaybackError won't cycle it (it bails
@@ -951,6 +962,7 @@ class PlayerCubit extends Cubit<PlayerState> {
 
         if (p > Duration.zero) {
           _startedThisSource = true; // source is playing
+          _everStarted = true; // ...and something has played at least once
           _startTimer?.cancel();
           _startTimer = null;
           if (!_markedWatching) {
@@ -1843,6 +1855,20 @@ class PlayerCubit extends Cubit<PlayerState> {
       emit(
         state.copyWith(loadingSources: false, error: () => 'No source has this yet'),
       );
+    } on EpisodeNotAvailable catch (e) {
+      // Auto Resolve swept every installed source and none could serve this
+      // episode. Worth saying which of the two it was: nothing has the show at
+      // all, or something has it but not this episode — those send the viewer
+      // somewhere different.
+      if (gen != _gen) return;
+      emit(
+        state.copyWith(
+          loadingSources: false,
+          error: () => e.hadTitleMatch
+              ? "Episode ${e.episode} isn't available on any source yet"
+              : 'No source has this yet',
+        ),
+      );
     } on EpisodeNotOnSource catch (e) {
       // The show matched fine — this one episode just isn't on that source.
       // Its own toString() carries the canonical (a raw storage key), so
@@ -2581,6 +2607,21 @@ class PlayerCubit extends Cubit<PlayerState> {
   /// consecutive filler episodes — but never strands the user (if everything
   /// left is filler, it just plays the next one). Same rule for autoplay and
   /// the Next button; pick an episode from the list to still watch filler.
+  /// Whether there is a next episode worth offering.
+  ///
+  /// Not just "is there another entry": an episode the catalogue lists but no
+  /// source has yet (an airing show's next one) is not something Next should
+  /// point at. Every Next affordance in the player reads this, so the button,
+  /// the outro pill, the Up-next card and autoplay all agree.
+  bool get hasPlayableNext =>
+      nextAutoplayIndex(
+        currentIndex: state.currentIndex,
+        episodes: episodes,
+        fillerEps: _fillerEps,
+        autoSkipFiller: sl<PlaybackPrefs>().autoSkipFiller,
+      ) !=
+      null;
+
   Future<void> playNext({bool auto = false}) async {
     final target = nextAutoplayIndex(
       currentIndex: state.currentIndex,

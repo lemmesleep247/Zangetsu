@@ -1,10 +1,11 @@
 import 'package:dio/dio.dart';
 
+import '../anilist/anilist_graphql.dart';
 import '../models/media_item.dart' show normalizeTitle;
 import '../error/network_failure.dart';
 import 'schedule_models.dart';
 
-const String _kAniListEndpoint = 'https://graphql.anilist.co';
+const String _kAniListEndpoint = AniListGraphql.endpoint;
 
 /// UTC-epoch-seconds window: local midnight today .. +7 days.
 ({int startSec, int endSec}) weekWindowUtc(DateTime nowLocal) {
@@ -13,17 +14,6 @@ const String _kAniListEndpoint = 'https://graphql.anilist.co';
   return (
     startSec: startLocal.toUtc().millisecondsSinceEpoch ~/ 1000,
     endSec: endLocal.toUtc().millisecondsSinceEpoch ~/ 1000,
-  );
-}
-
-/// UTC-epoch-seconds window covering the whole calendar month that [anchorLocal]
-/// falls in (its 1st .. the 1st of the next month, exclusive).
-({int startSec, int endSec}) monthWindowUtc(DateTime anchorLocal) {
-  final start = DateTime(anchorLocal.year, anchorLocal.month, 1);
-  final end = DateTime(anchorLocal.year, anchorLocal.month + 1, 1);
-  return (
-    startSec: start.toUtc().millisecondsSinceEpoch ~/ 1000,
-    endSec: end.toUtc().millisecondsSinceEpoch ~/ 1000,
   );
 }
 
@@ -176,14 +166,6 @@ query ($start: Int, $end: Int, $page: Int) {
     return _fetchRange(win.startSec, win.endSec, maxPages: 10);
   }
 
-  /// Every SFW airing event in the calendar month [anchor] falls in, or `[]`
-  /// on error. AniList only has confirmed slots ~2 weeks out, so later days are
-  /// sparse; cap pages so the fetch stays quick (skeleton covers the wait).
-  Future<List<AiringEntry>> monthAiring(DateTime anchor) {
-    final win = monthWindowUtc(anchor);
-    return _fetchRange(win.startSec, win.endSec, maxPages: 12);
-  }
-
   /// Paginated AniList airingSchedules fetch for a UTC-epoch-seconds window.
   /// Fetches page 1 first (so an empty or single-page window bails cheaply),
   /// then the remaining pages in one parallel batch. AniList reports
@@ -226,10 +208,7 @@ query ($start: Int, $end: Int, $page: Int) {
         'variables': {'start': startSec, 'end': endSec, 'page': page},
       },
       options: Options(
-        headers: const {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
+        headers: AniListGraphql.headers,
         validateStatus: (s) => s != null && s < 500,
       ),
     );

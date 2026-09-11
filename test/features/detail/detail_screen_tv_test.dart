@@ -33,6 +33,7 @@ import 'package:watch_app/core/tv/tv_focusable.dart';
 import 'package:watch_app/core/tv/tv_list_focusable.dart';
 import 'package:watch_app/features/detail/cubit/detail_cubit.dart';
 import 'package:watch_app/features/detail/detail_screen.dart';
+import 'package:watch_app/features/detail/wrong_title_sheet.dart';
 
 // ── Minimal stubs — no Hive, no platform channels ────────────────────────────
 
@@ -43,6 +44,11 @@ class _StubSourceRepository implements SourceRepository {
 
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
   @override
   List<({String id, String name})> get pickableSources => loadedSources;
 
@@ -84,6 +90,11 @@ class _FakeTitlePrefs extends TitlePrefsStore {
 class _FakeMyListStore implements MyListStore {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   bool contains(MediaItem m) => false;
@@ -96,6 +107,11 @@ class _FakeMyListStore implements MyListStore {
 class _FakeListStatusStore implements ListStatusStore {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   WatchStatus? statusOf(MediaItem m) => null;
@@ -108,6 +124,11 @@ class _FakeListStatusStore implements ListStatusStore {
 class _FakeResumeStore implements ResumeStore {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   ResumeMark? get(String sourceId, String showId, String episodeId) => null;
@@ -117,6 +138,11 @@ class _FakeResumeStore implements ResumeStore {
 class _ResumeAtEpisode55Store implements ResumeStore {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   ResumeMark? get(String sourceId, String showId, String episodeId) {
@@ -134,6 +160,11 @@ class _ResumeAtEpisode55Store implements ResumeStore {
 class _FakeProviderRegistry implements ProviderRegistry {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   ProviderRegistryEntry? entryFor(String sourceId) => null;
@@ -147,6 +178,11 @@ class _FakeCloudStreamManager extends ChangeNotifier
     implements CloudStreamManager {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   BaseProvider? get(String sourceId) => null;
@@ -162,6 +198,11 @@ class _FakeCloudStreamManager extends ChangeNotifier
 class _FakeDownloadManager extends ChangeNotifier implements DownloadManager {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
 
   @override
   DownloadRecord? recordFor(
@@ -494,6 +535,21 @@ void main() {
         find.byKey(const ValueKey('tv-rel-1')),
       );
       expect(rel1, isA<TvFocusable>());
+    },
+  );
+
+  testWidgets(
+    'DetailScreenTv does not show MatchLine for non-zm titles',
+    (tester) async {
+      await tester.pumpWidget(
+        BlocProvider<DetailCubit>.value(
+          value: cubit,
+          child: MaterialApp(home: DetailScreenTv(item: _testItem)),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byType(MatchLine), findsNothing);
     },
   );
 

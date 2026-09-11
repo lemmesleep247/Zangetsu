@@ -1,12 +1,11 @@
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../../../core/zmode/metadata_repository.dart';
-import '../../../core/zmode/metadata_provider_prefs.dart';
 import '../../../core/di/injector.dart';
-import '../../../core/anilist/anilist_network_policy.dart';
 import '../../../core/error/exceptions.dart';
+import '../../../core/anilist/anilist_network_policy.dart';
 import '../../../core/error/network_failure.dart';
+import '../../../core/logging/app_logger.dart';
 import '../../../core/lnreader/novel_cloudflare.dart';
 import '../../../core/metadata/episode_metadata_service.dart';
 import '../../../core/metadata/metadata_enrichment.dart';
@@ -16,6 +15,9 @@ import '../../../core/models/media_extras.dart';
 import '../../../core/models/provider_info.dart';
 import '../../../core/playback/title_prefs.dart';
 import '../../../core/repository/catalogue_repository.dart';
+import '../../../core/zmode/metadata_repository.dart';
+import '../../../core/zmode/zmode_ids.dart';
+import '../../../core/zmode/metadata_provider_prefs.dart';
 
 export '../../../core/models/episode_title.dart' show cleanTitle;
 
@@ -44,11 +46,6 @@ class DetailState extends Equatable {
     this.extrasLoading = false,
   });
 
-  /// Cast + Relations are still being fetched. They arrive after the detail
-  /// does, on their own request, so without this the tabs said "no cast" for
-  /// a second before filling — an empty state is a claim, and it was wrong.
-  final bool extrasLoading;
-
   final DetailStatus status;
   final MediaDetail? detail;
 
@@ -56,6 +53,7 @@ class DetailState extends Equatable {
   /// loads (AniList for anime, TMDB for movie/TV). Empty until resolved.
   final List<CastMember> cast;
   final List<MediaRelation> relations;
+  final bool extrasLoading;
 
   /// 'sub' | 'dub'. Drives the Sub/Dub toggle and the player `category`.
   final String category;
@@ -109,7 +107,6 @@ class DetailState extends Equatable {
     status,
     detail,
     episodesLoading,
-    extrasLoading,
     category,
     selectedSeason,
     descExpanded,
@@ -184,7 +181,6 @@ class DetailCubit extends Cubit<DetailState> {
       onPartial: onPartial,
     );
   }
-
   final String _url;
   final TitlePrefsStore _prefs;
 
@@ -204,29 +200,43 @@ class DetailCubit extends Cubit<DetailState> {
   /// owning source is unknown (active-source title) — robust, never throws.
   String get _prefsSourceId => _sourceId ?? '';
 
+  /// True for zm:// anime/movie/tv — catalogue episodes land in one shot.
+  bool get _zmVideoDetail {
+    final c = ZmodeIds.parseShow(_url);
+    if (c == null) return false;
+    return c.kind != ZKind.manga && c.kind != ZKind.novel;
+  }
+
+  void _log(String msg, {String level = 'I'}) =>
+      AppLogger.instance.log('[detail] $msg', level: level);
+
   /// Initial fetch. Emits loading then success/error for the current
   /// [DetailState.category] (the per-title remembered choice, else 'sub').
   Future<void> load() async {
+    final sw = Stopwatch()..start();
+    _log(
+      'load start url=$_url sourceId=${_sourceId ?? "active"} '
+      'cat=${state.category} zmVideo=$_zmVideoDetail',
+    );
     emit(
       state.copyWith(status: DetailStatus.loading, clearCloudflareUrl: true),
     );
     try {
       final detail = await _fetchDetail(
         category: state.category,
-        // Metadata titles resolve their source by searching every installed
-        // one in turn; that used to hold the whole screen on the skeleton.
-        // Paint as soon as the metadata lands and let the episode list fill
-        // in when the full detail below arrives. Only ever moves the screen
-        // loading → success, so it can't clobber a finished or failed load.
+        // Metadata titles paint catalogue episodes immediately; source matching
+        // is deferred to Play / download / the source row on the Detail screen.
         onPartial: (partial) {
           if (isClosed || state.status != DetailStatus.loading) return;
-          emit(
-            state.copyWith(
-              status: DetailStatus.success,
-              detail: partial,
-              episodesLoading: true,
-            ),
+          _log(
+            'load partial title="${partial.title}" eps=${partial.episodes.length} '
+            '${sw.elapsedMilliseconds}ms',
           );
+          emit(state.copyWith(
+            status: DetailStatus.success,
+            detail: partial,
+            episodesLoading: !_zmVideoDetail,
+          ));
         },
       );
       // A novel (LNReader) plugin swallows its own fetch failure and returns
@@ -237,48 +247,52 @@ class DetailCubit extends Cubit<DetailState> {
       // gets mistaken for a block.
       final latched = detail.title.isEmpty ? NovelCloudflare.pendingUrl : null;
       if (latched != null) {
-        emit(
-          state.copyWith(
-            status: DetailStatus.error,
-            cloudflareUrl: latched,
-            episodesLoading: false,
-          ),
-        );
+        _log('load cloudflare latched ${sw.elapsedMilliseconds}ms', level: 'W');
+        emit(state.copyWith(
+          status: DetailStatus.error,
+          cloudflareUrl: latched,
+          episodesLoading: false,
+        ));
         return;
       }
       NovelCloudflare.clear();
-      emit(
-        state.copyWith(
-          status: DetailStatus.success,
-          detail: detail,
-          episodesLoading: false,
-        ),
+      _log(
+        'load success title="${detail.title}" eps=${detail.episodes.length} '
+        '${sw.elapsedMilliseconds}ms',
       );
+      emit(state.copyWith(
+        status: DetailStatus.success,
+        detail: detail,
+        episodesLoading: false,
+      ));
       _enrich(detail);
     } on CloudflareRequiredException catch (e) {
-      emit(
-        state.copyWith(
-          status: DetailStatus.error,
-          cloudflareUrl: e.url,
-          episodesLoading: false,
-        ),
-      );
-    } catch (e) {
+      _log('load cloudflare required ${e.url} ${sw.elapsedMilliseconds}ms', level: 'W');
+      emit(state.copyWith(
+        status: DetailStatus.error,
+        cloudflareUrl: e.url,
+        episodesLoading: false,
+      ));
+    } catch (e, st) {
       // Same distinction Home makes: a request that never left the device is
       // not the title failing to load. A rate limit is a third thing again —
       // it passes on its own, and saying how long is the whole difference
       // between waiting and hunting a fault.
       final limited = aniListRateLimitOf(e);
       final offline = limited == null && await isOfflineErrorConfirmed(e);
-      emit(
-        state.copyWith(
-          status: DetailStatus.error,
-          error: limited != null
-              ? 'rate_limited:${limited.seconds}'
-              : (offline ? 'offline' : 'load_failed'),
-          episodesLoading: false,
-        ),
+      _log(
+        'load failed offline=$offline limited=${limited?.seconds} '
+        '${sw.elapsedMilliseconds}ms: $e',
+        level: 'E',
       );
+      AppLogger.instance.logError(e, st);
+      emit(state.copyWith(
+        status: DetailStatus.error,
+        error: limited != null
+            ? 'rate_limited:${limited.seconds}'
+            : (offline ? 'offline' : 'load_failed'),
+        episodesLoading: false,
+      ));
     }
   }
 
@@ -295,6 +309,8 @@ class DetailCubit extends Cubit<DetailState> {
   /// skip it. A match change makes that mandatory — the episode list is new,
   /// so its per-episode metadata has to be fetched again.
   Future<void> refresh({bool dropCache = true}) async {
+    final sw = Stopwatch()..start();
+    _log('refresh start dropCache=$dropCache url=$_url');
     // Pull-to-refresh wants genuinely fresh data, so it drops the cache. A
     // SOURCE CHANGE does not: the source being switched to was never in that
     // cache, and clearing it throws away every other source's responses too,
@@ -309,15 +325,17 @@ class DetailCubit extends Cubit<DetailState> {
         // source's, until the new list lands.
         onPartial: (partial) {
           if (isClosed || state.status != DetailStatus.success) return;
-          emit(
-            state.copyWith(
-              detail: partial.copyWith(
-                malId: partial.malId ?? previous?.malId,
-                tmdbId: partial.tmdbId ?? previous?.tmdbId,
-              ),
-              episodesLoading: true,
-            ),
+          _log(
+            'refresh partial title="${partial.title}" eps=${partial.episodes.length} '
+            '${sw.elapsedMilliseconds}ms',
           );
+          emit(state.copyWith(
+            detail: partial.copyWith(
+              malId: partial.malId ?? previous?.malId,
+              tmdbId: partial.tmdbId ?? previous?.tmdbId,
+            ),
+            episodesLoading: !_zmVideoDetail,
+          ));
         },
       );
       if (isClosed) return;
@@ -325,6 +343,7 @@ class DetailCubit extends Cubit<DetailState> {
       // surfaces as an empty detail, not an exception.
       final latched = fresh.title.isEmpty ? NovelCloudflare.pendingUrl : null;
       if (latched != null) {
+        _log('refresh cloudflare latched ${sw.elapsedMilliseconds}ms', level: 'W');
         emit(state.copyWith(cloudflareUrl: latched, episodesLoading: false));
         return;
       }
@@ -332,6 +351,10 @@ class DetailCubit extends Cubit<DetailState> {
       final merged = fresh.copyWith(
         malId: fresh.malId ?? previous?.malId,
         tmdbId: fresh.tmdbId ?? previous?.tmdbId,
+      );
+      _log(
+        'refresh success title="${merged.title}" eps=${merged.episodes.length} '
+        '${sw.elapsedMilliseconds}ms',
       );
       emit(
         state.copyWith(
@@ -344,8 +367,11 @@ class DetailCubit extends Cubit<DetailState> {
       _enrich(merged, force: true);
     } on CloudflareRequiredException catch (e) {
       if (isClosed) return;
+      _log('refresh cloudflare required ${e.url} ${sw.elapsedMilliseconds}ms', level: 'W');
       emit(state.copyWith(cloudflareUrl: e.url, episodesLoading: false));
-    } catch (e) {
+    } catch (e, st) {
+      _log('refresh failed ${sw.elapsedMilliseconds}ms: $e', level: 'E');
+      AppLogger.instance.logError(e, st);
       // Keep what's on screen — a failed pull shouldn't blank the page. The
       // skeleton must still come down though: onPartial may have armed it,
       // and nothing else would ever turn it off.
@@ -360,14 +386,12 @@ class DetailCubit extends Cubit<DetailState> {
       final limited = aniListRateLimitOf(e);
       final offline = limited == null && await isOfflineErrorConfirmed(e);
       if (isClosed) return;
-      emit(
-        state.copyWith(
-          error: limited != null
-              ? 'rate_limited:${limited.seconds}'
-              : (offline ? 'offline' : 'load_failed'),
-          episodesLoading: false,
-        ),
-      );
+      emit(state.copyWith(
+        error: limited != null
+            ? 'rate_limited:${limited.seconds}'
+            : (offline ? 'offline' : 'load_failed'),
+        episodesLoading: false,
+      ));
     }
   }
 
@@ -388,6 +412,11 @@ class DetailCubit extends Cubit<DetailState> {
   }
 
   Future<void> _enrichInner(MediaDetail detail, {bool force = false}) async {
+    final sw = Stopwatch()..start();
+    _log(
+      'enrich start title="${detail.title}" type=${detail.type} '
+      'malId=${detail.malId} tmdbId=${detail.tmdbId} eps=${detail.episodes.length}',
+    );
     var d = detail;
 
     // TMDB fallback: an id-less movie/series (e.g. some CloudStream sources)
@@ -415,9 +444,7 @@ class DetailCubit extends Cubit<DetailState> {
           d = d.copyWith(tmdbId: id);
           emit(state.copyWith(detail: d));
         }
-      } catch (_) {
-        /* keep going with what we have */
-      }
+      } catch (_) {/* keep going with what we have */}
     }
 
     // Id-less anime (Aniyomi, most CloudStream): resolve the MAL id from title
@@ -431,9 +458,7 @@ class DetailCubit extends Cubit<DetailState> {
           d = d.copyWith(malId: resolved);
           emit(state.copyWith(detail: d));
         }
-      } catch (_) {
-        /* keep going without it */
-      }
+      } catch (_) {/* keep going without it */}
     }
 
     // A movie-typed title from an anime-capable (mixed) source might actually be
@@ -450,9 +475,7 @@ class DetailCubit extends Cubit<DetailState> {
           d = d.copyWith(malId: mal, type: ProviderType.anime);
           emit(state.copyWith(detail: d));
         }
-      } catch (_) {
-        /* stays a movie */
-      }
+      } catch (_) {/* stays a movie */}
     }
 
     // Fill in per-episode descriptions (AniZip for anime, TMDB season for a
@@ -471,9 +494,7 @@ class DetailCubit extends Cubit<DetailState> {
           d = d.copyWith(episodes: enriched);
           emit(state.copyWith(detail: d));
         }
-      } catch (_) {
-        /* keep episodes as-is */
-      }
+      } catch (_) {/* keep episodes as-is */}
     }
 
     // Prefer id-based enrichment (AniList/TMDB) — it's richer: actor photos,
@@ -495,9 +516,7 @@ class DetailCubit extends Cubit<DetailState> {
           emit(state.copyWith(cast: extras.cast, relations: extras.relations));
           return;
         }
-      } catch (_) {
-        /* fall through to source-supplied extras */
-      }
+      } catch (_) {/* fall through to source-supplied extras */}
     }
     // Fall back to Cast/Relations the source supplied directly (e.g.
     // CloudStream's actors/recommendations) — so the tabs fill even without ids.
@@ -507,6 +526,7 @@ class DetailCubit extends Cubit<DetailState> {
         state.copyWith(cast: detail.castMembers, relations: detail.relations),
       );
     }
+    _log('enrich done ${sw.elapsedMilliseconds}ms');
   }
 
   /// Sub/Dub re-fetch. No-op when the category is unchanged. Otherwise
@@ -530,12 +550,10 @@ class DetailCubit extends Cubit<DetailState> {
       await _prefs.setCategory(_prefsSourceId, _url, cat);
     } catch (e) {
       final offline = await isOfflineErrorConfirmed(e);
-      emit(
-        state.copyWith(
-          status: DetailStatus.error,
-          error: offline ? 'offline' : 'load_failed',
-        ),
-      );
+      emit(state.copyWith(
+        status: DetailStatus.error,
+        error: offline ? 'offline' : 'load_failed',
+      ));
     }
   }
 

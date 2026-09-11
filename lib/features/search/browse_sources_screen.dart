@@ -1,3 +1,6 @@
+import 'browse_sources_screen_tv.dart';
+import '../../core/di/injector.dart';
+import '../../core/app_mode.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/mode/content_mode.dart';
@@ -30,7 +33,13 @@ class _BrowseSourcesScreenState extends State<BrowseSourcesScreen>
     with SingleTickerProviderStateMixin {
   final _controller = TextEditingController();
   String _query = '';
-  late final TabController _tab = TabController(length: 3, vsync: this);
+
+  /// Phone-only. On TV this build hands off to [BrowseSourcesScreenTv], which
+  /// has its own tabs — creating a second controller here just to dispose it
+  /// tore down a ticker whose ancestors were already gone.
+  TabController? _tabOrNull;
+  TabController get _tab =>
+      _tabOrNull ??= TabController(length: 3, vsync: this);
 
   /// [SourceListKind] and [ContentMode] both split streaming/manga/novel the
   /// same way; this just names the mapping for [SearchScreen.forceMode].
@@ -43,12 +52,18 @@ class _BrowseSourcesScreenState extends State<BrowseSourcesScreen>
   @override
   void dispose() {
     _controller.dispose();
-    _tab.dispose();
+    _tabOrNull?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // TV gets its own 10-foot layout, the same way SearchScreen hands off to
+    // SearchScreenTv. The TV screen and its test came over with the TV work;
+    // the hand-off itself never landed, so nothing could reach it.
+    if (sl.isRegistered<AppMode>() && sl<AppMode>().isTv) {
+      return const BrowseSourcesScreenTv();
+    }
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -105,26 +120,38 @@ class _BrowseSourcesScreenState extends State<BrowseSourcesScreen>
               child: Row(
                 children: [
                   const SizedBox(width: 12),
-                  const Icon(Icons.search, size: 20, color: AppColors.textTertiary),
+                  const Icon(
+                    Icons.search,
+                    size: 20,
+                    color: AppColors.textTertiary,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: TextField(
                       controller: _controller,
                       onChanged: (v) => setState(() => _query = v),
-                      style: AppText.body.copyWith(color: AppColors.textPrimary),
+                      style: AppText.body.copyWith(
+                        color: AppColors.textPrimary,
+                      ),
                       cursorColor: AppColors.accent,
                       decoration: InputDecoration(
                         hintText: context.l10n.searchSources,
                         hintStyle: AppText.body,
                         border: InputBorder.none,
                         isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                        contentPadding: const EdgeInsets.symmetric(
+                          vertical: 14,
+                        ),
                       ),
                     ),
                   ),
                   if (_query.isNotEmpty)
                     IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.textTertiary),
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        size: 18,
+                        color: AppColors.textTertiary,
+                      ),
                       tooltip: context.l10n.clear,
                       onPressed: () => setState(() {
                         _controller.clear();
@@ -147,7 +174,8 @@ class _BrowseSourcesScreenState extends State<BrowseSourcesScreen>
                     query: _query,
                     onBrowse: (id, name) => Navigator.of(context).push(
                       MaterialPageRoute<void>(
-                        builder: (_) => BrowseSourceScreen(sourceId: id, title: name),
+                        builder: (_) =>
+                            BrowseSourceScreen(sourceId: id, title: name),
                       ),
                     ),
                   ),

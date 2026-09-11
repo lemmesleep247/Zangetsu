@@ -28,6 +28,11 @@ class _Src implements SourceRepository {
   final Map<String, List<MediaItem>> bySource;
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
   @override
   List<({String id, String name})> get pickableSources => loadedSources;
   @override
@@ -56,6 +61,11 @@ class _Src implements SourceRepository {
 class _None implements SourceRepository {
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
   @override
   List<({String id, String name})> get pickableSources => loadedSources;
   @override
@@ -69,6 +79,11 @@ class _Repo implements CatalogueRepository {
   int detailCalls = 0;
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+  // Added with the on-demand resolver: SourceMatcher now asks whether a JS
+  // provider is loaded before searching it. These fakes are already "loaded".
+  @override
+  Future<bool> ensureSourceLoaded(String sourceId) async => true;
+
   @override
   Future<void> clearHttpCache() async {}
   @override
@@ -177,7 +192,9 @@ void main() {
     await t.tap(find.textContaining('AllAnime'));
     await t.pumpAndSettle();
     // The shared picker has no title row — its tabs identify it.
-    expect(find.text('Movies/Series'), findsOneWidget);
+    // One merged group, so the picker is identified by its All tab rather
+    // than by an Anime/Movies split that no longer exists.
+    expect(find.text('All'), findsOneWidget);
     expect(find.textContaining('HiAnime'), findsOneWidget);
 
     await t.runAsync(() async {
@@ -187,7 +204,11 @@ void main() {
     await t.pumpAndSettle();
 
     expect(find.textContaining('HiAnime'), findsOneWidget);
-    expect(prefs.get(fma.kind), 'ani:2');
+    // Picking pins THIS title to ani:2. The kind default is deliberately left
+    // alone now — one title's correction no longer reassigns every other
+    // title of that kind.
+    expect(sl<MatchStore>().get(fma, 'ani:2')?.pinned, isTrue);
+    expect(prefs.get(fma.kind), isNull);
     // AllAnime's own match is untouched by switching to HiAnime.
     expect(sl<MatchStore>().get(fma, 'ani:1')?.sourceId, 'ani:1');
   });
@@ -400,7 +421,7 @@ void main() {
   });
 
   testWidgets(
-      'a source that has nothing is still named, and Wrong title? still offered',
+      'nothing anywhere leaves Auto Resolve unnamed, with the picker still there',
       (t) async {
     // Neither source has anything resembling this title.
     await sl.reset();
@@ -430,20 +451,22 @@ void main() {
     });
     await t.pumpAndSettle();
 
-    // The source is a choice, not a search result, so the row names it even
-    // though it turned out to have nothing — and says so underneath, with
-    // Wrong title? there to correct the match.
-    expect(find.textContaining('AllAnime'), findsWidgets);
+    // Nothing matched anywhere, so Auto Resolve has no source to name — and
+    // no line under it either, because "Wrong title?" corrects a source's
+    // match and there is no source yet. "No source has this yet" would be
+    // wrong too: nothing has been pinned, so nothing has been ruled out.
+    expect(find.text('Auto Resolve'), findsOneWidget);
     expect(find.text('No source has this yet'), findsNothing);
-    expect(find.text('Wrong title?'), findsOneWidget);
-    expect(find.text('No episodes available from this source'), findsOneWidget);
+    expect(find.text('Wrong title?'), findsNothing);
 
-    await t.tap(find.textContaining('AllAnime').first);
+    await t.tap(find.text('Auto Resolve'));
     await t.pumpAndSettle();
     // The shared picker has no title row — its tabs identify it. Both sources
-    // are offered; AllAnime appears twice now (the pill names it too).
-    expect(find.text('Movies/Series'), findsOneWidget);
-    expect(find.textContaining('AllAnime'), findsWidgets);
+    // are offered, so a correction is still two taps away.
+    // One merged group, so the picker is identified by its All tab rather
+    // than by an Anime/Movies split that no longer exists.
+    expect(find.text('All'), findsOneWidget);
+    expect(find.textContaining('AllAnime'), findsOneWidget);
     expect(find.textContaining('HiAnime'), findsOneWidget);
   });
 
@@ -460,7 +483,11 @@ void main() {
         sources: none, store: store, prefs: prefs, candidates: (_) => const []));
     await t.pumpWidget(harness(const MatchLine(canonical: fma, title: 'x')));
     await t.pumpAndSettle();
-    expect(find.text('No source has this yet'), findsOneWidget);
+    // "No sources installed", NOT "no source has this yet": nothing is
+    // installed, and blaming the title for that is the same mistake as
+    // blaming a source for an episode that hasn't aired.
+    expect(find.text('No sources installed'), findsOneWidget);
+    expect(find.text('No source has this yet'), findsNothing);
     expect(find.text('Wrong title?'), findsNothing);
   });
 }

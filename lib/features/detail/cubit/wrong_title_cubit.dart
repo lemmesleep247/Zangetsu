@@ -52,17 +52,24 @@ class WrongTitleCubit extends Cubit<WrongTitleState> {
   final SourceMatcher _matcher;
   final ZCanonical _canonical;
 
+  /// The title being corrected — the sheet needs it to ask the store which
+  /// result is already pinned, so that one can be marked rather than offered
+  /// again as if it were a different show.
+  ZCanonical get canonical => _canonical;
+
   /// The source this correction currently applies to.
   String _sourceId;
   String get sourceId => _sourceId;
 
   /// Correct against a different source, re-running the same query against it.
-  /// Choosing a source is global for the kind (see [ZSourcePrefs]), so this is
-  /// the same choice the Detail pill makes, made from here instead.
+  /// This only changes which source THIS correction searches — nothing is
+  /// persisted until [choose] actually pins a result (see [pinManual]).
+  /// Writing a kind-wide default just from browsing the dropdown was the bug
+  /// this design fixes: every title started naming whichever source was last
+  /// glanced at here.
   Future<void> setSource(String id) async {
     if (id == _sourceId) return;
     _sourceId = id;
-    await _matcher.selectSource(_canonical.kind, id);
     await search(state.query);
   }
 
