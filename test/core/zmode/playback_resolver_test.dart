@@ -36,6 +36,9 @@ class _SweepSrc implements SourceRepository {
   final Set<String> hangs;
   final log = <String>[];
 
+  /// Every category this source was asked for.
+  final cats = <String>[];
+
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
 
@@ -73,6 +76,7 @@ class _SweepSrc implements SourceRepository {
   @override
   Future<List<Episode>> episodes(String url, {String category = 'sub', String? sourceId}) async {
     log.add('episodes:$url:$sourceId');
+    cats.add(category);
     if (hangs.contains(sourceId)) return Completer<List<Episode>>().future;
     if (sourceId == 'src-a') return aEps;
     if (sourceId == 'src-b') return bEps;
@@ -127,6 +131,69 @@ void main() {
     r.bindTitleLookup((_) async => (title: 'FMA', alt: null, malId: 100));
     return r;
   }
+
+  test('switching a title\'s source drops its cached winners', () async {
+    // The reported bug: play an episode, change source, press play — and the
+    // OLD source's stream came back until the app was restarted. The episode
+    // list refreshed, so the screen looked right; only playback was stale,
+    // because sources() answers from _winners before consulting the pin.
+    final src = _SweepSrc(
+      aEps: const [
+        Episode(id: '1', title: 'Ep 1', number: 1, url: 'https://a/1'),
+        Episode(id: '2', title: 'Ep 2', number: 2, url: 'https://a/2'),
+      ],
+      bEps: const [
+        Episode(id: '1', title: 'Ep 1', number: 1, url: 'https://b/1'),
+        Episode(id: '2', title: 'Ep 2', number: 2, url: 'https://b/2'),
+      ],
+    );
+    final matcher = SourceMatcher(
+      sources: src,
+      store: store,
+      prefs: prefs,
+      candidates: (_) => src.loadedSources,
+    );
+    final r = resolver(sources: src, matcher: matcher, preferred: 'src-a');
+    matcher.bindSourceChanged(r.invalidateShow);
+
+    // Played once on A — the winner is now cached for this episode.
+    expect((await r.resolveForPlayback(_ep2)).match.sourceId, 'src-a');
+    expect(r.resolvedSourceId(_ep2), 'src-a');
+
+    // The user switches this title to B.
+    await matcher.pinTitleToSource(_show, 'src-b', title: 'FMA');
+
+    // Without the invalidation this still answered from A's cached winner.
+    expect(r.resolvedSourceId(_ep2), isNull, reason: 'cached winner survived');
+    final streams = await r.sources(_ep2);
+    expect(streams.single.url, 'https://b/stream');
+  });
+
+  test('a different show keeps its cached winner', () async {
+    // invalidateShow is prefix-matched, so it must not empty the cache for
+    // every title that happens to be resolved.
+    final src = _SweepSrc(
+      aEps: const [
+        Episode(id: '1', title: 'Ep 1', number: 1, url: 'https://a/1'),
+        Episode(id: '2', title: 'Ep 2', number: 2, url: 'https://a/2'),
+      ],
+      bEps: const [],
+    );
+    final matcher = SourceMatcher(
+      sources: src,
+      store: store,
+      prefs: prefs,
+      candidates: (_) => src.loadedSources,
+    );
+    final r = resolver(sources: src, matcher: matcher, preferred: 'src-a');
+    matcher.bindSourceChanged(r.invalidateShow);
+
+    await r.resolveForPlayback(_ep2);
+    expect(r.resolvedSourceId(_ep2), 'src-a');
+
+    r.invalidateShow(const ZCanonical(ZKind.anime, 'mal:999'));
+    expect(r.resolvedSourceId(_ep2), 'src-a', reason: 'wrong show cleared');
+  });
 
   test('tries second source when first lacks the episode', () async {
     final src = _SweepSrc(
@@ -277,6 +344,72 @@ void main() {
     expect(src.log.where((l) => l.endsWith(':src-a')), isEmpty,
         reason: 'src-a blew the budget once; it must not be asked again');
     expect(src.log, contains('sources:https://b/3:src-b'));
+  });
+
+  test('dub and sub are resolved and cached separately', () async {
+    // The reported bug lives here. sub and dub are different episode lists
+    // for the SAME zm:// url, so a cache keyed on the url alone hands a dub
+    // request whatever sub resolved earlier — and the category never reached
+    // the source at all, so every fetch came back sub regardless.
+    final src = _SweepSrc(
+      aEps: const [
+        Episode(id: '1', title: 'Ep 1', number: 1, url: 'https://a/1'),
+        Episode(id: '2', title: 'Ep 2', number: 2, url: 'https://a/2'),
+      ],
+      bEps: const [],
+    );
+    final matcher = SourceMatcher(
+      sources: src,
+      store: store,
+      prefs: prefs,
+      candidates: (_) => src.loadedSources,
+    );
+    final r = resolver(sources: src, matcher: matcher, preferred: 'src-a');
+
+    // Play once as sub. This is what fills the winner cache.
+    await r.sources(_ep2);
+    expect(r.resolvedSourceId(_ep2), 'src-a');
+    // Nothing is remembered for dub yet — a shared key would claim otherwise.
+    expect(
+      r.resolvedSourceId(_ep2, category: 'dub'),
+      isNull,
+      reason: 'the sub winner was returned for dub',
+    );
+
+    src.log.clear();
+    src.cats.clear();
+
+    // sources() answers from _winners BEFORE consulting anything else, so on
+    // a shared key this returns the sub stream and never asks the source.
+    await r.sources(_ep2, category: 'dub');
+    expect(
+      src.cats,
+      contains('dub'),
+      reason: 'dub was served from the sub cache without asking the source',
+    );
+    expect(r.resolvedSourceId(_ep2, category: 'dub'), 'src-a');
+  });
+
+  test('the category reaches the source', () async {
+    final src = _SweepSrc(
+      aEps: const [
+        Episode(id: '1', title: 'Ep 1', number: 1, url: 'https://a/1'),
+        Episode(id: '2', title: 'Ep 2', number: 2, url: 'https://a/2'),
+      ],
+      bEps: const [],
+    );
+    final matcher = SourceMatcher(
+      sources: src,
+      store: store,
+      prefs: prefs,
+      candidates: (_) => src.loadedSources,
+    );
+    final r = resolver(sources: src, matcher: matcher, preferred: 'src-a');
+    await r.resolveForPlayback(_ep2, category: 'dub');
+    // Zangetsu JS and CloudStream sources key their episode list on this and
+    // quietly answer with sub when it is missing, which is why Dub never
+    // played: the argument was never sent.
+    expect(src.cats, contains('dub'));
   });
 
   test('a sweep that found nothing is remembered, not repeated', () async {

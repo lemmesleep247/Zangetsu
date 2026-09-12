@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:watch_app/core/models/episode.dart';
 import 'package:watch_app/core/models/home_section.dart';
+import 'package:watch_app/core/models/media_detail.dart';
 import 'package:watch_app/core/models/media_item.dart';
 import 'package:watch_app/core/models/provider_info.dart';
 import 'package:watch_app/core/models/video_source.dart';
@@ -12,6 +13,7 @@ import 'package:watch_app/core/playback/source_health_store.dart';
 import 'package:watch_app/core/repository/source_repository.dart';
 import 'package:watch_app/core/zmode/anilist_catalogue.dart';
 import 'package:watch_app/core/zmode/mal_catalogue.dart';
+import 'package:watch_app/core/provider/cf_solve_needed.dart';
 import 'package:watch_app/core/zmode/match_store.dart';
 import 'package:watch_app/core/zmode/zmode_source_prefs.dart';
 import 'package:watch_app/core/zmode/metadata_repository.dart';
@@ -88,15 +90,42 @@ class _Src implements SourceRepository {
   @override
   bool hasSource(String sourceId) => true;
   @override
-  Future<List<MediaItem>> search(String q, {String category = 'sub', String? sourceId}) async =>
-      [MediaItem(id: 'fma', title: 'FMA', url: 'https://src/fma', type: ProviderType.anime, sourceId: 'allanime')];
+  Future<List<MediaItem>> search(String q, {String category = 'sub', String? sourceId}) async {
+    // What the real SourceRepository does with an id no provider is loaded
+    // for. `zm` is this router's own pseudo id, so asking a provider for it
+    // is always a bug — this is the throw that made every Z Mode download
+    // fail before the router was wired in.
+    if (sourceId != null && sourceId != 'allanime') {
+      throw StateError('Provider not loaded: $sourceId');
+    }
+    return [MediaItem(id: 'fma', title: 'FMA', url: 'https://src/fma', type: ProviderType.anime, sourceId: 'allanime')];
+  }
   @override
   Future<List<Episode>> episodes(String url, {String category = 'sub', String? sourceId}) async {
     log.add('episodes:$url');
-    return [
-      const Episode(id: 'a', title: 'Ep 1', number: 1, url: 'https://src/fma/1'),
-      const Episode(id: 'b', title: 'Ep 2', number: 2, url: 'https://src/fma/2'),
-    ];
+    return _eps;
+  }
+
+  static const _eps = [
+    Episode(id: 'a', title: 'Ep 1', number: 1, url: 'https://src/fma/1'),
+    Episode(id: 'b', title: 'Ep 2', number: 2, url: 'https://src/fma/2'),
+  ];
+
+  // Detail, not episodes, is what Z Mode asks for now — same request either
+  // way (a provider's getEpisodes IS getDetail), and it carries the sub/dub
+  // counts the Sub/Dub toggle is built from.
+  @override
+  Future<MediaDetail> detail(
+    String url, {
+    String category = 'sub',
+    String? sourceId,
+    void Function(MediaDetail)? onPartial,
+  }) async {
+    log.add('detail:$url:$category');
+    return MediaDetail(
+      id: 'fma', title: 'FMA', url: url, type: ProviderType.anime,
+      sourceId: 'allanime', episodes: _eps, subCount: 2, dubCount: 2,
+    );
   }
   @override
   Future<List<VideoSource>> sources(String episodeUrl, {String? sourceId, bool fast = false}) async {
@@ -133,6 +162,20 @@ class _EpSrc implements SourceRepository {
       [MediaItem(id: 'fma', title: 'FMA', url: 'https://src/fma', type: ProviderType.anime, sourceId: 'allanime')];
   @override
   Future<List<Episode>> episodes(String url, {String category = 'sub', String? sourceId}) async => _eps;
+
+  @override
+  Future<MediaDetail> detail(
+    String url, {
+    String category = 'sub',
+    String? sourceId,
+    void Function(MediaDetail)? onPartial,
+  }) async {
+    log.add('detail:$url:$category');
+    return MediaDetail(
+      id: 'fma', title: 'FMA', url: url, type: ProviderType.anime,
+      sourceId: 'allanime', episodes: _eps,
+    );
+  }
   @override
   Future<List<VideoSource>> sources(String episodeUrl, {String? sourceId, bool fast = false}) async {
     log.add('sources:$episodeUrl:$sourceId');
@@ -241,6 +284,44 @@ void main() {
     expect(src.log, ['episodes:https://src/fma', 'sources:https://src/fma/2:allanime']);
   });
 
+  test('a named source is the one asked, not the remembered winner', () async {
+    // A user report: "I'm on a different source and it gives me other source
+    // download links." The downloader stores the source you were looking at
+    // and asks for it by name; this dropped the name and answered from the
+    // resolver's winner — whichever source last PLAYED the episode.
+    kind = ZKind.anime;
+    await repo.sources('zm://anime/mal:100/ep/2', fast: true);
+    src.log.clear();
+
+    await repo.sources(
+      'zm://anime/mal:100/ep/2',
+      sourceId: 'allanime',
+      fast: true,
+    );
+    expect(
+      src.log.where((l) => l.startsWith('sources:')),
+      everyElement(endsWith(':allanime')),
+      reason: 'the named source was ignored',
+    );
+  });
+
+  test('the router\'s own id means "no preference", not a source', () async {
+    // `zm` is this repository's pseudo id, not something any provider has.
+    // Treating it as a named source would make every ordinary play fail.
+    kind = ZKind.anime;
+    final out = await repo.sources(
+      'zm://anime/mal:100/ep/2',
+      sourceId: ZmodeIds.sourceId,
+      fast: true,
+    );
+    expect(out, isNotEmpty);
+    // Behaviour only — deliberately not asserting that no provider was asked
+    // for "zm". Without the guard the matcher still swallows the resulting
+    // `Provider not loaded: zm` and the sweep answers anyway, so the two are
+    // indistinguishable from out here. The guard earns its place by not
+    // making that throwing call at all, which no test can see.
+  });
+
   test('sources() with no match throws NoSourceMatch', () async {
     final dead = _NoHits();
     final r = _metaRepo(
@@ -260,6 +341,47 @@ void main() {
     expect(() => r.sources('zm://anime/mal:100/ep/1'), throwsA(isA<NoSourceMatch>()));
   });
 
+  group('a Cloudflare wall belongs to the source reading uses', () {
+    tearDown(() => CfSolveNeeded.clear('blocked.test'));
+
+    Future<MetadataRepository> readingRepoWith(String flaggedSourceId) async {
+      CfSolveNeeded.needsSolve(
+        'blocked.test',
+        'https://blocked.test/x',
+        sourceId: flaggedSourceId,
+      );
+      final dead = _NoHits();
+      return _metaRepo(
+        sources: dead,
+        store: await MatchStore.open(),
+        prefs: await ZSourcePrefs.open(),
+        browseKind: () => ZKind.manga,
+        candidates: (_) => [(id: 'mine', name: 'Mine'), (id: 'other', name: 'Other')],
+        matcher: SourceMatcher(
+          sources: dead,
+          store: store,
+          prefs: prefs,
+          candidates: (_) => [(id: 'mine', name: 'Mine'), (id: 'other', name: 'Other')],
+        ),
+        anilist: AniListCatalogue((q, v) async => {'Media': _al()}),
+      );
+    }
+
+    test('a flag on a source this title never touched does not wall the page',
+        () async {
+      // The old check asked "is ANY source of this kind flagged", so one
+      // Cloudflare-gated extension anywhere in the library turned every
+      // unmatched manga into a Cloudflare screen naming a source the reader
+      // has never opened. Video never behaved this way.
+      final r = await readingRepoWith('other');
+
+      final d = await r.detail('zm://manga/mal:100');
+
+      expect(d.episodes, isEmpty, reason: 'no match is still no chapters');
+      expect(d.title, isNotEmpty, reason: 'but the page renders');
+    });
+  });
+
   test('manga detail carries the matched source chapters and ids', () async {
     kind = ZKind.manga;
     final d = await repo.detail('zm://manga/mal:100');
@@ -276,6 +398,22 @@ void main() {
     expect(d.synonyms, isNotEmpty);
     expect(d.country, 'JP');
     expect(d.format, isNotNull);
+  });
+
+  test('the Sub/Dub switch asks the source for that cut', () async {
+    // The exact call the player makes when you pick Dub, for sources that
+    // keep separate lists per cut (HiAnime, AniKoto — both read opts.category
+    // and quietly answer with sub when it is missing). This dropped the
+    // argument and re-asked for `detail(url)`, which defaults to sub: the
+    // switch fetched the sub list again, found the same episode and replayed
+    // Japanese under a Dub badge.
+    kind = ZKind.anime;
+    await repo.episodes('zm://anime/mal:100', category: 'dub');
+    expect(
+      src.log.where((l) => l.startsWith('detail:')),
+      contains(endsWith(':dub')),
+      reason: 'the source was asked for sub',
+    );
   });
 
   test('anime detail takes its episode list from the matched source', () async {
@@ -486,7 +624,14 @@ void main() {
     expect(d.episodes[0].number, 1);
     expect(d.episodes[0].url, 'zm://anime/mal:100/ep/1');
     await r.sources(d.episodes[0].url, fast: true);
-    expect(es.log, ['sources:https://src/fma/0:allanime']);
+    // The detail call is the source's episode list being fetched — same one
+    // request as before, now asked for as `detail` so the sub/dub counts come
+    // with it. What matters here is the stream call: the CANONICAL url the
+    // screen shows resolves to the SOURCE's own url for that position.
+    expect(es.log, [
+      'detail:https://src/fma:sub',
+      'sources:https://src/fma/0:allanime',
+    ]);
   });
 
   test('a saved match skips search when title is already cached', () async {
