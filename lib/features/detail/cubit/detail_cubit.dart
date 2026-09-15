@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -18,6 +19,7 @@ import '../../../core/playback/playback_prefs.dart';
 import '../../../core/playback/title_prefs.dart';
 import '../../../core/repository/catalogue_repository.dart';
 import '../../../core/zmode/metadata_repository.dart';
+import '../../../core/zmode/season_chain.dart';
 import '../../../core/zmode/zmode_ids.dart';
 import '../../../core/zmode/metadata_provider_prefs.dart';
 
@@ -44,6 +46,7 @@ class DetailState extends Equatable {
     this.error,
     this.cast = const [],
     this.relations = const [],
+    this.seasons = const [],
     this.cloudflareUrl,
     this.episodesLoading = false,
     this.extrasLoading = false,
@@ -56,6 +59,11 @@ class DetailState extends Equatable {
   /// loads (AniList for anime, TMDB for movie/TV). Empty until resolved.
   final List<CastMember> cast;
   final List<MediaRelation> relations;
+
+  /// The franchise's seasons in order, when it has more than one. Empty for
+  /// the great majority of titles, which is what tells the Relations tab to
+  /// draw no Seasons section at all. See [SeasonChain].
+  final List<SeasonEntry> seasons;
   final bool extrasLoading;
 
   /// 'sub' | 'dub'. Drives the Sub/Dub toggle and the player `category`.
@@ -85,6 +93,7 @@ class DetailState extends Equatable {
     String? error,
     List<CastMember>? cast,
     List<MediaRelation>? relations,
+    List<SeasonEntry>? seasons,
     String? cloudflareUrl,
     bool clearCloudflareUrl = false,
     bool? episodesLoading,
@@ -98,6 +107,7 @@ class DetailState extends Equatable {
     error: error ?? this.error,
     cast: cast ?? this.cast,
     relations: relations ?? this.relations,
+    seasons: seasons ?? this.seasons,
     cloudflareUrl: clearCloudflareUrl
         ? null
         : (cloudflareUrl ?? this.cloudflareUrl),
@@ -116,6 +126,7 @@ class DetailState extends Equatable {
     error,
     cast,
     relations,
+    seasons,
     cloudflareUrl,
   ];
 }
@@ -255,6 +266,11 @@ class DetailCubit extends Cubit<DetailState> {
           _enrich(partial);
         },
       );
+      // Backing out while this was in flight closes the cubit, and every emit
+      // below then throws "Cannot emit new states after calling close" — 41 of
+      // them across the shared reports. The work is finished either way; there
+      // is just no longer a screen to tell.
+      if (isClosed) return;
       // A novel (LNReader) plugin swallows its own fetch failure and returns
       // an empty detail rather than throwing (LnReaderProvider.getDetail's
       // fallback), so a Cloudflare challenge never reaches the catch below.
@@ -291,6 +307,10 @@ class DetailCubit extends Cubit<DetailState> {
       ));
       _enrich(carried);
     } on CloudflareRequiredException catch (e) {
+      // The last emit in here without one: a catch is not covered by the
+      // isClosed check in the try body, and the fetch that threw is exactly
+      // the slow kind somebody backs out of.
+      if (isClosed) return;
       _log('load cloudflare required ${e.url} ${sw.elapsedMilliseconds}ms', level: 'W');
       emit(state.copyWith(
         status: DetailStatus.error,
@@ -304,6 +324,7 @@ class DetailCubit extends Cubit<DetailState> {
       // between waiting and hunting a fault.
       final limited = aniListRateLimitOf(e);
       final offline = limited == null && await isOfflineErrorConfirmed(e);
+      if (isClosed) return; // that await can outlive the screen too
       _log(
         'load failed offline=$offline limited=${limited?.seconds} '
         '${sw.elapsedMilliseconds}ms: $e',
@@ -619,6 +640,9 @@ class DetailCubit extends Cubit<DetailState> {
         if (isClosed) return;
         if (extras.cast.isNotEmpty || extras.relations.isNotEmpty) {
           emit(state.copyWith(cast: extras.cast, relations: extras.relations));
+          // After the tab has something to show, not before: the walk costs a
+          // request per hop and nobody is waiting on it.
+          unawaited(_loadSeasons(d));
           return;
         }
       } catch (_) {/* fall through to source-supplied extras */}
@@ -632,6 +656,23 @@ class DetailCubit extends Cubit<DetailState> {
       );
     }
     _log('enrich done ${sw.elapsedMilliseconds}ms');
+  }
+
+  /// Walks the franchise so the Relations tab can show its seasons in order.
+  ///
+  /// Deliberately after Cast/Relations have already painted: each hop is a
+  /// request, and nothing on screen is waiting for the answer. A miss is an
+  /// empty list, which simply means no Seasons section.
+  Future<void> _loadSeasons(MediaDetail d) async {
+    try {
+      final seasons = await sl<MetadataEnrichment>().seasons(d);
+      if (isClosed || seasons.isEmpty) return;
+      // The detail may have moved on while the walk was in flight.
+      if (state.detail?.url != d.url) return;
+      emit(state.copyWith(seasons: seasons));
+    } catch (e) {
+      _log('seasons failed: $e', level: 'W');
+    }
   }
 
   /// Sub/Dub re-fetch. No-op when the category is unchanged. Otherwise
