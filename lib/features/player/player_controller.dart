@@ -24,6 +24,7 @@ import '../../core/models/provider_info.dart';
 import '../../core/models/video_source.dart';
 import '../../core/playback/hls.dart';
 import '../../core/playback/playback_prefs.dart';
+import '../../core/playback/source_health_store.dart';
 import '../../core/playback/filler_service.dart';
 import '../../core/playback/skip_service.dart';
 import '../../core/playback/subtitle_language.dart';
@@ -62,6 +63,21 @@ String? _resolveVideoOutput() => resolveVideoOutput(
   choice: sl<PlaybackPrefs>().videoOutput,
   shaderStyle: sl<PlaybackPrefs>().videoShaderStyle,
 );
+
+/// The decoder to hand media_kit at VideoController creation — Apple only.
+///
+/// media_kit applies its OWN default when this is null, and on Apple that
+/// default lands AFTER [_configureMpv]'s write and replaces it, so the decoder
+/// the user picked never reaches mpv. Passing it here makes our value the one
+/// that gets applied.
+///
+/// Null everywhere else ON PURPOSE. Android's media_kit default is `auto-safe`
+/// — and `no` when it detects an emulator, which is what keeps video working on
+/// emulators. Overriding that would take the emulator fallback away, so Android
+/// keeps exactly the behaviour it ships with today.
+String? _configHwdec() => currentDecoderPlatform == DecoderPlatform.apple
+    ? sl<PlaybackPrefs>().hwdecValue
+    : null;
 
 /// Immutable view-state for the player screen: exactly the fields the UI
 /// rebuilds on. These used to drive `notifyListeners()` on the old
@@ -306,6 +322,9 @@ class PlayerCubit extends Cubit<PlayerState> {
       // high-res playback + less battery/heat. media_kit auto-falls back to
       // software decode if the device can't hardware-decode a codec.
       enableHardwareAcceleration: true,
+      // Apple only — see [_configHwdec]. Null on Android, which keeps
+      // media_kit's own default (and its emulator fallback) exactly as before.
+      hwdec: _configHwdec(),
       // Attach the Android render surface only once the video's dimensions are
       // known, so it isn't created then resized on the first frame — kills the
       // black-frame/resize hitch at playback start.
@@ -572,7 +591,7 @@ class PlayerCubit extends Cubit<PlayerState> {
           epUrl = catEps[state.currentIndex].url;
         }
       }
-      final resolved = await _resolveSources(epUrl);
+      final resolved = await _resolveNoted(epUrl);
       if (gen != _gen) return;
       emit(state.copyWith(sources: resolved, loadingSources: false));
       _buildQualityMenu(gen);
@@ -1854,7 +1873,7 @@ class PlayerCubit extends Cubit<PlayerState> {
       sl<PlaybackResolver>().invalidateWinner(_episodeUrl(currentEpisode));
     }
     try {
-      final resolved = await _resolveSources(_episodeUrl(currentEpisode));
+      final resolved = await _resolveNoted(_episodeUrl(currentEpisode));
       if (gen != _gen) return; // superseded by a newer open
       emit(state.copyWith(sources: resolved, loadingSources: false));
       _buildQualityMenu(
@@ -2607,7 +2626,7 @@ class PlayerCubit extends Cubit<PlayerState> {
     resolver.markSourceUnplayable(epUrl, winner, category: _activeCategory);
     _toast('That one didn\'t cut. Trying another source.');
     try {
-      final resolved = await _resolveSources(epUrl);
+      final resolved = await _resolveNoted(epUrl);
       if (gen != _gen) return true; // superseded; leaving is not a dead end
       final fresh = resolved.where((s) => !_tried.contains(s.url)).toList();
       if (fresh.isEmpty) return false;
@@ -2628,6 +2647,43 @@ class PlayerCubit extends Cubit<PlayerState> {
       debugPrint('[player] source failover · no next source: $e');
       return false;
     }
+  }
+
+  /// [_resolveSources], plus a note on whether this source could produce any
+  /// playable link for this title.
+  ///
+  /// This is the ONLY signal that catches the common way a source rots: search
+  /// and the episode list keep working — the site is up, the pages parse — but
+  /// the embed host moved and nothing playable comes out. Health recorded from
+  /// search alone calls such a source perfectly healthy forever.
+  ///
+  /// Advisory only. It feeds the health screen; it never affects search order,
+  /// never skips a source, and never removes anything.
+  Future<List<VideoSource>> _resolveNoted(String epUrl) async {
+    try {
+      final out = await _resolveSources(epUrl);
+      _notePlayback(ok: out.isNotEmpty);
+      return out;
+    } catch (_) {
+      _notePlayback(ok: false);
+      rethrow;
+    }
+  }
+
+  void _notePlayback({required bool ok}) {
+    final url = showUrl;
+    // Z-Mode resolves across many sources behind one pseudo id, so an outcome
+    // there says nothing about any particular source — attributing it would
+    // convict whichever source happened to be asked last.
+    if (url == null || url.isEmpty || ZmodeIds.isZ(url)) return;
+    if (!sl.isRegistered<SourceHealthStore>()) return;
+    // Keyed by TITLE: retrying one broken title must count once, not once per
+    // attempt. Fire-and-forget — playback must never wait on bookkeeping.
+    unawaited(
+      sl<SourceHealthStore>()
+          .recordPlayback(sourceId, url, ok: ok)
+          .catchError((_) {}),
+    );
   }
 
   /// Headline plus the plain fact, on the second line the error view styles
@@ -3282,6 +3338,20 @@ class PlayerCubit extends Cubit<PlayerState> {
     // Before _persist, which doesn't consult _gen — the resume mark is still
     // written on the way out.
     _gen++;
+    // SILENCE FIRST, then do the bookkeeping.
+    //
+    // Everything below can wait on the network — _persist's exit flush forces a
+    // cloud upsert past its throttle — and mpv keeps playing for as long as any
+    // of it takes. A signed-in user on a slow connection hears the episode for
+    // another 5-10 seconds after leaving. (Signed out there is no upsert at
+    // all, which is why this never shows up in local testing.)
+    //
+    // Nothing after this reads live player state: _persist saves _lastPos /
+    // _lastDur, which the position stream already filled, so pausing changes
+    // what the user HEARS and nothing about what gets SAVED. Deliberately not
+    // awaited — a wedged player must not be able to delay teardown, which is
+    // the very thing being fixed.
+    unawaited(player.pause().catchError((_) {}));
     await _persist(flush: true);
     // Leaving the player → drop Watching. Do not immediately restore a
     // "Playing" browse status; that is what kept the profile occupied after

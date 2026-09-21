@@ -108,7 +108,11 @@ SourceBuckets categorizedSources() {
   // Resolved once for the whole bucketing pass — see [_typeOfFromMap]. This
   // used to be reg.typeOf(e.name) AND sourceTypeOf(e.name) called per row
   // below (two repo-manifest deserializes per row instead of one total).
-  final typeMap = reg.typeMapOf();
+  // Both maps from ONE manifest pass — a second getAll() here doubles the
+  // per-call cost the perf test pins.
+  final maps = reg.manifestMapsOf();
+  final typeMap = maps.types;
+  final logoMap = maps.logos;
   ({String id, String label, String? repo, String? icon}) row(e) {
     final base = (e.displayName as String).isNotEmpty
         ? e.displayName as String
@@ -116,8 +120,22 @@ SourceBuckets categorizedSources() {
     final repo = _repoLabelFromUrl(e.originRepoUrl as String?);
     // No ecosystem tag: these ARE the app's own sources, and the repo line
     // underneath already says where they came from.
-    // icon: always null — a Zangetsu JS manifest carries no icon field.
-    return (id: e.name as String, label: base, repo: repo, icon: null);
+    //
+    // The logo is snapshotted on the registry entry at install time, the same
+    // way [displayName] is, so this costs no manifest read per row. Empty for
+    // every manifest that declares no `logo` — which is all of them today —
+    // and empty means the letter tile, exactly as before.
+    // Live manifest first, then the snapshot taken at install as the offline
+    // fallback. The snapshot alone would leave every source installed before
+    // the field existed on its letter tile forever.
+    final id = e.name as String;
+    final logo = logoMap[id] ?? (e.logoUrl as String? ?? '');
+    return (
+      id: id,
+      label: base,
+      repo: repo,
+      icon: logo.isEmpty ? null : logo,
+    );
   }
 
   int byLabel(a, b) => sourceRowName(

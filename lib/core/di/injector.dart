@@ -24,6 +24,7 @@ import '../playback/pinned_sources.dart';
 import '../playback/search_history.dart';
 import '../playback/search_prefs.dart';
 import '../ui/home_rows_prefs.dart';
+import '../ui/streaming_prefs.dart';
 import '../ui/nav_prefs.dart';
 import '../playback/search_source_prefs.dart';
 import '../playback/source_health_store.dart';
@@ -55,6 +56,7 @@ import '../state/active_source_cubit.dart';
 import '../locale/locale_controller.dart';
 import '../zmode/genre_catalog.dart';
 import '../zmode/metadata_repository.dart';
+import '../zmode/source_score_store.dart';
 import '../zmode/zmode_module.dart';
 import '../zmode/zmode_ids.dart';
 import '../zmode/zmode_prefs.dart';
@@ -74,6 +76,7 @@ import '../anilist/anilist_network_policy.dart';
 import '../anilist/anilist_service.dart';
 import '../anilist/anilist_store.dart';
 import '../tracker/mal_service.dart';
+import '../tracker/mangabaka_service.dart';
 import '../tracker/simkl_service.dart';
 import '../tracker/tracker_binding_store.dart';
 import '../tracker/tracker_hub.dart';
@@ -334,6 +337,7 @@ Future<void> initDependencies() async {
   await ZModePrefs.init();
   await GenreCatalog.init();
   await HomeRowsPrefs.init();
+  await StreamingPrefs.init();
   await DownloadPrefs.init();
   sl.registerSingleton<DownloadPrefs>(DownloadPrefs());
   await TorrentPrefs.init();
@@ -364,6 +368,8 @@ Future<void> initDependencies() async {
   // sources, and backs the "Source health" test screen.
   await SourceHealthStore.init();
   sl.registerSingleton<SourceHealthStore>(SourceHealthStore());
+  final sourceScores = await SourceScoreStore.open();
+  sl.registerSingleton<SourceScoreStore>(sourceScores);
 
   // Read by SourceRepository.baseUrlFor / cfSolveTargetFor, so it has to be
   // registered before that repository is used, not just before it is built.
@@ -466,8 +472,18 @@ Future<void> initDependencies() async {
   sl.registerSingleton<MalService>(MalService(dio));
   await SimklService.init();
   sl.registerSingleton<SimklService>(SimklService(dio));
+  await MangaBakaService.init();
+  sl.registerSingleton<MangaBakaService>(MangaBakaService(dio));
   sl.registerSingleton<TrackerHub>(
-    TrackerHub([sl<AniListService>(), sl<MalService>(), sl<SimklService>()]),
+    TrackerHub([
+      sl<AniListService>(),
+      sl<MalService>(),
+      sl<SimklService>(),
+      // Reading-only: MangaBaka has no anime library, so TrackerHub.forMode
+      // keeps it out of anime contexts the way it already keeps Simkl out of
+      // reading ones.
+      sl<MangaBakaService>(),
+    ]),
   );
   // Manual match corrections (the sync sheet's "Change match"): show → chosen
   // tracker entry id, persisted so a fixed match sticks.
@@ -478,6 +494,7 @@ Future<void> initDependencies() async {
         'anilist': sl<AniListService>(),
         'mal': sl<MalService>(),
         'simkl': sl<SimklService>(),
+        'mangabaka': sl<MangaBakaService>(),
       }));
 
   // Share deep links (zangetsu://open?…): opens a shared title's Detail, or

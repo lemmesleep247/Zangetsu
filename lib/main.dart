@@ -14,6 +14,8 @@ import 'core/analytics/analytics.dart';
 import 'core/app_config.dart';
 import 'core/app_mode.dart';
 import 'core/di/injector.dart';
+import 'core/ui/splash_style.dart';
+import 'core/hive/safe_box.dart';
 import 'core/discord/discord_rpc.dart';
 import 'core/environment.dart';
 import 'core/logging/app_logger.dart';
@@ -140,6 +142,21 @@ Future<void> main() async {
         } catch (e, st) {
           AppLogger.instance.logError(e, st);
         }
+      }
+      // The splash is drawn while initDependencies() is still opening boxes,
+      // so the one box it reads (which animation to play) has to be open
+      // before that. Tiny local file; bounded and swallowed like everything
+      // else out here, because a splash preference is never worth delaying or
+      // failing boot over — SplashStyle falls back to the default if this
+      // didn't land. initDependencies re-opens it, which Hive serves from
+      // cache.
+      try {
+        await initHiveForApp();
+        await openBoxSafely(
+          SplashStyle.boxName,
+        ).timeout(const Duration(seconds: 2));
+      } catch (e, st) {
+        AppLogger.instance.logError(e, st);
       }
       // Dependency init happens inside the boot gate so the splash shows
       // immediately instead of a blank screen.
@@ -392,6 +409,12 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
     final discord = sl.isRegistered<DiscordRpc>() ? sl<DiscordRpc>() : null;
     if (state == AppLifecycleState.resumed) {
       discord?.onForeground();
+      // A blink of no network makes the startup session check fail, which
+      // raises the "Reconnect to sync" banner — and nothing re-tested it,
+      // because restore() only runs at launch. No-op unless that banner is up.
+      if (sl.isRegistered<AuthCubit>()) {
+        unawaited(sl<AuthCubit>().revalidateIfFlagged());
+      }
       _syncOnResume();
       // The wallpaper may have changed while we were away. No-op unless
       // Material You is on, and only rebuilds if the colours actually moved.

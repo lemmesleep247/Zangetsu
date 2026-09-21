@@ -535,6 +535,12 @@ abstract class AppLocalizations {
   /// **'Testing…'**
   String get testing;
 
+  /// No description provided for @searchOk.
+  ///
+  /// In en, this message translates to:
+  /// **'Search OK'**
+  String get searchOk;
+
   /// No description provided for @working.
   ///
   /// In en, this message translates to:
@@ -840,6 +846,60 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Active source'**
   String get activeSource;
+
+  /// No description provided for @streamingServices.
+  ///
+  /// In en, this message translates to:
+  /// **'Streaming Services'**
+  String get streamingServices;
+
+  /// No description provided for @streamingServicesSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Browse what each service carries where you are'**
+  String get streamingServicesSubtitle;
+
+  /// No description provided for @streamingServicesEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No services listed for this country'**
+  String get streamingServicesEmpty;
+
+  /// No description provided for @streamingServicesMetadataNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Browsing only — titles still play through your own sources'**
+  String get streamingServicesMetadataNote;
+
+  /// No description provided for @pinAsHomeRow.
+  ///
+  /// In en, this message translates to:
+  /// **'Pin as home row'**
+  String get pinAsHomeRow;
+
+  /// No description provided for @unpinHomeRow.
+  ///
+  /// In en, this message translates to:
+  /// **'Unpin'**
+  String get unpinHomeRow;
+
+  /// No description provided for @pinLimitReached.
+  ///
+  /// In en, this message translates to:
+  /// **'You can pin up to {count} services'**
+  String pinLimitReached(int count);
+
+  /// No description provided for @streamingRegion.
+  ///
+  /// In en, this message translates to:
+  /// **'Streaming region'**
+  String get streamingRegion;
+
+  /// No description provided for @streamingRegionSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Which country\'s catalogue to show'**
+  String get streamingRegionSubtitle;
 
   /// No description provided for @sourceHealth.
   ///
@@ -5036,6 +5096,12 @@ abstract class AppLocalizations {
   /// **'See All'**
   String get seeAll2;
 
+  /// No description provided for @webView.
+  ///
+  /// In en, this message translates to:
+  /// **'WebView'**
+  String get webView;
+
   /// No description provided for @openInBrowser.
   ///
   /// In en, this message translates to:
@@ -6289,6 +6355,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'App icon'**
   String get appIcon;
+
+  /// No description provided for @splashStyle.
+  ///
+  /// In en, this message translates to:
+  /// **'Splash'**
+  String get splashStyle;
+
+  /// No description provided for @splashStyleBlurb.
+  ///
+  /// In en, this message translates to:
+  /// **'What plays while the app starts up.'**
+  String get splashStyleBlurb;
 
   /// No description provided for @currentLocation.
   ///
@@ -8671,6 +8749,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No source has this yet'**
   String get noSourceHasThisYet;
+
+  /// No description provided for @checkedTopSources.
+  ///
+  /// In en, this message translates to:
+  /// **'Checked your top sources — none had this'**
+  String get checkedTopSources;
 
   /// No description provided for @pickTheRightTitle.
   ///
