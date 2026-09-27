@@ -5,12 +5,16 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart' as intl;
 
+import 'app_localizations_ar.dart';
 import 'app_localizations_de.dart';
 import 'app_localizations_en.dart';
 import 'app_localizations_es.dart';
 import 'app_localizations_fr.dart';
+import 'app_localizations_id.dart';
 import 'app_localizations_it.dart';
 import 'app_localizations_ja.dart';
+import 'app_localizations_pt.dart';
+import 'app_localizations_tr.dart';
 import 'app_localizations_zh.dart';
 
 // ignore_for_file: type=lint
@@ -100,11 +104,15 @@ abstract class AppLocalizations {
   /// A list of this localizations delegate's supported locales.
   static const List<Locale> supportedLocales = <Locale>[
     Locale('en'),
+    Locale('ar'),
     Locale('de'),
     Locale('es'),
     Locale('fr'),
+    Locale('id'),
     Locale('it'),
     Locale('ja'),
+    Locale('pt'),
+    Locale('tr'),
     Locale('zh'),
     Locale('zh', 'TW'),
   ];
@@ -9085,6 +9093,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Export'**
   String get export;
+
+  /// No description provided for @keepDownloadsPrivate.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep downloads private'**
+  String get keepDownloadsPrivate;
+
+  /// No description provided for @keepDownloadsPrivateSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'New video downloads stay inside Zangetsu instead of the Downloads folder. They are deleted when you uninstall Zangetsu. Chapters and exports are unaffected.'**
+  String get keepDownloadsPrivateSubtitle;
 }
 
 class _AppLocalizationsDelegate
@@ -9098,12 +9118,16 @@ class _AppLocalizationsDelegate
 
   @override
   bool isSupported(Locale locale) => <String>[
+    'ar',
     'de',
     'en',
     'es',
     'fr',
+    'id',
     'it',
     'ja',
+    'pt',
+    'tr',
     'zh',
   ].contains(locale.languageCode);
 
@@ -9126,6 +9150,8 @@ AppLocalizations lookupAppLocalizations(Locale locale) {
 
   // Lookup logic when only language code is specified.
   switch (locale.languageCode) {
+    case 'ar':
+      return AppLocalizationsAr();
     case 'de':
       return AppLocalizationsDe();
     case 'en':
@@ -9134,10 +9160,16 @@ AppLocalizations lookupAppLocalizations(Locale locale) {
       return AppLocalizationsEs();
     case 'fr':
       return AppLocalizationsFr();
+    case 'id':
+      return AppLocalizationsId();
     case 'it':
       return AppLocalizationsIt();
     case 'ja':
       return AppLocalizationsJa();
+    case 'pt':
+      return AppLocalizationsPt();
+    case 'tr':
+      return AppLocalizationsTr();
     case 'zh':
       return AppLocalizationsZh();
   }

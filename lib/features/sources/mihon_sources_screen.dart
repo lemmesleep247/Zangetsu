@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:watch_app/core/hive/safe_box.dart';
 
 import 'package:flutter/material.dart';
@@ -414,7 +413,7 @@ class _MihonExtensionGroupState extends State<_MihonExtensionGroup> {
                 // Every language of a multi-language extension is one
                 // package, so the whole group shares one icon.
                 Padding(
-                  padding: const EdgeInsets.only(right: 12),
+                  padding: const EdgeInsetsDirectional.only(end: 12),
                   child: SourceIconTile(
                     name: name,
                     icon: SourceIconStore.urlFor(rows.first.pkg),
@@ -566,27 +565,25 @@ class _MihonSourceRowState extends State<_MihonSourceRow> {
 
     final pkg = widget.source.pkg;
 
-    if (Hive.isBoxOpen(MihonExtensionService.installedBoxName)) {
-      final box = Hive.box<dynamic>(MihonExtensionService.installedBoxName);
-      final apkPath = box.get(pkg) as String?;
-      if (apkPath != null) {
-        try {
-          final f = File(apkPath);
-          if (await f.exists()) await f.delete();
-        } catch (_) {}
-      }
-      await box.delete(pkg);
-    }
+    // Removes the box entry and the APK (see MihonExtensionService.uninstall
+    // for why the order matters). Returns a reason instead of swallowing it —
+    // the APK outliving the uninstall is what made sources reappear after a
+    // restart, silently.
+    final failure = await MihonExtensionService.uninstall(pkg);
 
     sl<MihonManager>().removeWhere((p) => p.pkg == pkg);
 
-    if (context.mounted) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(
-          SnackBar(content: Text(context.l10n.uninstalledName(name))),
-        );
-    }
+    if (!context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context)..clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          failure == null
+              ? context.l10n.uninstalledName(name)
+              : context.l10n.uninstallFailed(failure),
+        ),
+      ),
+    );
   }
 
   Future<void> _applyUpdate(MihonUpdate update) async {
@@ -637,7 +634,7 @@ class _MihonSourceRowState extends State<_MihonSourceRow> {
       final update = lookup(source.pkg);
       if (update == null) return const SizedBox.shrink();
       return Padding(
-        padding: const EdgeInsets.only(right: 4),
+        padding: const EdgeInsetsDirectional.only(end: 4),
         // Capped width + an ellipsis, because this row also carries a
         // settings, a sign-in and a delete button: the button's full label
         // used to win the width fight outright and the source NAME was what
@@ -684,7 +681,7 @@ class _MihonSourceRowState extends State<_MihonSourceRow> {
         child: Row(
           children: [
             Padding(
-              padding: const EdgeInsets.only(right: 12),
+              padding: const EdgeInsetsDirectional.only(end: 12),
               child: SourceIconTile(
                 name: source.displayName,
                 icon: SourceIconStore.urlFor(source.pkg),

@@ -1194,6 +1194,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // here (PopScope lets it pop straight through); 'confirm' asks first;
   // 'double_back' (default) needs a second back within 2s.
   Future<void> _handleCloseRequest() async {
+    // Nothing playing yet — the "Finding…" spinner has no close to confirm.
+    // Leaving must be instant, not gated behind double-back/confirm.
+    if (_c.state.loadingSources) {
+      _leavePlayer();
+      return;
+    }
     switch (sl<PlaybackPrefs>().closeConfirmation) {
       case 'confirm':
         final ok = await AppDialog.confirm(
@@ -1820,7 +1826,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       barrierColor: Colors.black54,
       transitionDuration: const Duration(milliseconds: 240),
       pageBuilder: (ctx, _, _) => Align(
-        alignment: Alignment.centerRight,
+        alignment: AlignmentDirectional.centerEnd,
         child: _EpisodesPanel(
           episodes: _c.episodes,
           currentIndex: _c.state.currentIndex,
@@ -2095,7 +2101,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _openSpeedSheet() {
-    const rates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+    const rates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0];
     final current = _c.player.state.rate;
     // Chips, not a list. Six rows at 52px each came to 388 — on a 393px-tall
     // landscape phone that's the entire screen, so you were picking a speed

@@ -5300,4 +5300,11 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get export => 'Export';
+
+  @override
+  String get keepDownloadsPrivate => 'Keep downloads private';
+
+  @override
+  String get keepDownloadsPrivateSubtitle =>
+      'New video downloads stay inside Zangetsu instead of the Downloads folder. They are deleted when you uninstall Zangetsu. Chapters and exports are unaffected.';
 }

@@ -165,14 +165,14 @@ class _PlaybackSettingsScreenState extends State<PlaybackSettingsScreen> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 2),
                 child: Align(
-                  alignment: Alignment.centerLeft,
+                  alignment: AlignmentDirectional.centerStart,
                   child: Text(context.l10n.playerInfoOverlay, style: AppText.headline),
                 ),
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
                 child: Align(
-                  alignment: Alignment.centerLeft,
+                  alignment: AlignmentDirectional.centerStart,
                   child: Text(
                     context.l10n.pickWhatShowsOverVideo,
                     style: AppText.caption,
@@ -237,6 +237,10 @@ class _PlaybackSettingsScreenState extends State<PlaybackSettingsScreen> {
     (1.25, '1.25x'),
     (1.5, '1.5x'),
     (2.0, '2x'),
+    (2.5, '2.5x'),
+    (3.0, '3x'),
+    (4.0, '4x'),
+    (5.0, '5x'),
   ];
 
   static const List<(int, String)> _skipOptions = [(5, '5s'), (10, '10s'), (15, '15s'), (30, '30s')];
@@ -326,7 +330,7 @@ class _PlaybackSettingsScreenState extends State<PlaybackSettingsScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
               child: Align(
-                alignment: Alignment.centerLeft,
+                alignment: AlignmentDirectional.centerStart,
                 child: Text(title, style: AppText.headline),
               ),
             ),
