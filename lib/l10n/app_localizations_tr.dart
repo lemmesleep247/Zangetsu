@@ -198,6 +198,9 @@ class AppLocalizationsTr extends AppLocalizations {
   String get custom => 'Özel';
 
   @override
+  String get customRange => 'Custom range';
+
+  @override
   String get defaultLabel => 'Varsayılan';
 
   @override
@@ -1301,6 +1304,18 @@ class AppLocalizationsTr extends AppLocalizations {
   String get nativeTVPlayer => 'Yerel TV oynatıcısı';
 
   @override
+  String get tvDecoderMode => 'TV decoder priority';
+
+  @override
+  String get tvDecoderHardwareOnly => 'Hardware only';
+
+  @override
+  String get tvDecoderHardwareFirst => 'Hardware first (software fallback)';
+
+  @override
+  String get tvDecoderSoftwareFirst => 'Software first (hardware fallback)';
+
+  @override
   String get softwareAudioDolbyDTS => 'Yazılımsal ses (Dolby/DTS)';
 
   @override
@@ -1939,6 +1954,9 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get findEpisode => 'Bölüm bul';
+
+  @override
+  String get findChapter => 'Find chapter';
 
   @override
   String get refreshChapters => 'Bölümleri yenile';
@@ -2775,6 +2793,9 @@ class AppLocalizationsTr extends AppLocalizations {
   String get popularity => 'Popülerlik';
 
   @override
+  String get favourites => 'Favourites';
+
+  @override
   String get sourceMaterial => 'Kaynak eser';
 
   @override
@@ -2889,6 +2910,9 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get sort => 'Sırala';
+
+  @override
+  String get shuffle => 'Rastgele seç';
 
   @override
   String get giveItAName => 'Bir ad ver';

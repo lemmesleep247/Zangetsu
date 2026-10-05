@@ -78,7 +78,10 @@ class TvPlayerActivity : Activity() {
         const val EXTRA_SUB_URLS = "subUrls"
         const val EXTRA_SUB_LANGS = "subLangs"
         const val EXTRA_SUB_LABELS = "subLabels"
-        const val EXTRA_SW_DECODE = "softwareDecoding"
+        const val EXTRA_DECODER_MODE = "decoderMode"
+        const val DECODER_MODE_HARDWARE_ONLY = 0
+        const val DECODER_MODE_HARDWARE_FIRST = 1
+        const val DECODER_MODE_SOFTWARE_FIRST = 2
         const val EXTRA_ACCENT = "accentColor"
         // Buffer preset (Settings → Playback), resolved Dart-side. Absent/0 =
         // ExoPlayer defaults, which is what this activity used before.
@@ -1711,12 +1714,9 @@ class TvPlayerActivity : Activity() {
     }
 
     private fun applySubtitleStyleLive() {
-        val tf = when {
-            !subFontPath.isNullOrBlank() ->
-                runCatching { android.graphics.Typeface.createFromFile(subFontPath) }.getOrNull()
-                    ?: android.graphics.Typeface.DEFAULT
-            else -> android.graphics.Typeface.DEFAULT
-        }
+        // Custom font first, system behind it — otherwise a font without
+        // Arabic glyphs renders boxes (see subtitleTypeface).
+        val tf = subtitleTypeface(subFontPath.takeUnless { it.isNullOrBlank() })
         playerView.subtitleView?.apply {
             setApplyEmbeddedStyles(false)
             setApplyEmbeddedFontSizes(false)
@@ -1741,21 +1741,18 @@ class TvPlayerActivity : Activity() {
     }
 
     /**
-     * Force each cue onto the user's vertical preference (0=top … 100=bottom).
-     * Media3's [SubtitleView.setBottomPaddingFraction] only shifts cues that
-     * leave line unset — most VTT/SRT/ASS cues set their own line, so without
-     * this remapping Low/Middle/High look identical.
+     * Force each cue onto the user's vertical preference (0=top … 100=bottom),
+     * keeping simultaneous cues on separate rows. Media3's
+     * [SubtitleView.setBottomPaddingFraction] only shifts cues that leave line
+     * unset — most VTT/SRT/ASS cues set their own line, so without this remapping
+     * Low/Middle/High look identical. See [SubtitleCuePositioning].
      */
-    private fun repositionCues(cues: List<Cue>): List<Cue> {
-        if (cues.isEmpty()) return cues
-        val line = subPositionPref.coerceIn(0, 100) / 100f
-        return cues.map { cue ->
-            cue.buildUpon()
-                .setLine(line, Cue.LINE_TYPE_FRACTION)
-                .setLineAnchor(Cue.ANCHOR_TYPE_END)
-                .build()
-        }
-    }
+    private fun repositionCues(cues: List<Cue>): List<Cue> =
+        SubtitleCuePositioning.position(
+            cues,
+            positionPercent = subPositionPref,
+            textSizeFraction = SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * subScale,
+        )
 
     private fun buildCaptionPos() {
         menuTitle("Position")
@@ -2555,21 +2552,23 @@ class TvPlayerActivity : Activity() {
     }
 
     /**
-     * OFF (default) → plain DefaultRenderersFactory (hardware only), identical to
-     * before. ON → NextRenderersFactory, which adds the hardware MediaCodec
-     * renderers first (via super) and appends FFmpeg audio/video only as a
-     * fallback. EXTENSION_RENDERER_MODE_ON keeps hardware preferred, so H.264/HEVC
-     * video + AAC audio are untouched — FFmpeg only decodes tracks the TV can't
-     * (Dolby AC3/E-AC3, DTS → were silent). Opt-in because software decoding can
-     * be unstable on some TVs (CloudStream disables it on TV by default too).
+     * The TV-only preference selects renderer priority. Hardware-only remains
+     * the default; extension decoders are available only when explicitly
+     * selected, with either hardware-first (ON) or software-first (PREFER)
+     * ordering. Decoder fallback allows ExoPlayer to try the other renderer if
+     * the preferred decoder cannot initialize.
      */
     private fun renderersFactory(): RenderersFactory =
-        if (intent.getBooleanExtra(EXTRA_SW_DECODE, false)) {
-            NextRenderersFactory(this)
+        when (intent.getIntExtra(EXTRA_DECODER_MODE, DECODER_MODE_HARDWARE_ONLY)) {
+            DECODER_MODE_HARDWARE_FIRST -> NextRenderersFactory(this)
                 .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
                 .setEnableDecoderFallback(true)
-        } else {
-            DefaultRenderersFactory(this)
+
+            DECODER_MODE_SOFTWARE_FIRST -> NextRenderersFactory(this)
+                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                .setEnableDecoderFallback(true)
+
+            else -> DefaultRenderersFactory(this)
         }
 
     private fun fmt(ms: Long): String {

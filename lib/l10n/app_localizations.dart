@@ -495,6 +495,12 @@ abstract class AppLocalizations {
   /// **'Custom'**
   String get custom;
 
+  /// No description provided for @customRange.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom range'**
+  String get customRange;
+
   /// No description provided for @defaultLabel.
   ///
   /// In en, this message translates to:
@@ -2481,6 +2487,30 @@ abstract class AppLocalizations {
   /// **'Native TV player'**
   String get nativeTVPlayer;
 
+  /// No description provided for @tvDecoderMode.
+  ///
+  /// In en, this message translates to:
+  /// **'TV decoder priority'**
+  String get tvDecoderMode;
+
+  /// No description provided for @tvDecoderHardwareOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Hardware only'**
+  String get tvDecoderHardwareOnly;
+
+  /// No description provided for @tvDecoderHardwareFirst.
+  ///
+  /// In en, this message translates to:
+  /// **'Hardware first (software fallback)'**
+  String get tvDecoderHardwareFirst;
+
+  /// No description provided for @tvDecoderSoftwareFirst.
+  ///
+  /// In en, this message translates to:
+  /// **'Software first (hardware fallback)'**
+  String get tvDecoderSoftwareFirst;
+
   /// No description provided for @softwareAudioDolbyDTS.
   ///
   /// In en, this message translates to:
@@ -3705,6 +3735,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Find episode'**
   String get findEpisode;
+
+  /// No description provided for @findChapter.
+  ///
+  /// In en, this message translates to:
+  /// **'Find chapter'**
+  String get findChapter;
 
   /// No description provided for @refreshChapters.
   ///
@@ -5260,6 +5296,12 @@ abstract class AppLocalizations {
   /// **'Popularity'**
   String get popularity;
 
+  /// No description provided for @favourites.
+  ///
+  /// In en, this message translates to:
+  /// **'Favourites'**
+  String get favourites;
+
   /// No description provided for @sourceMaterial.
   ///
   /// In en, this message translates to:
@@ -5421,6 +5463,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Sort'**
   String get sort;
+
+  /// No description provided for @shuffle.
+  ///
+  /// In en, this message translates to:
+  /// **'Shuffle'**
+  String get shuffle;
 
   /// No description provided for @giveItAName.
   ///

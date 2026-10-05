@@ -32,6 +32,7 @@ class NovelReaderScreen extends StatefulWidget {
     super.key,
     required this.sourceId,
     required this.showId,
+    this.showUrl,
     required this.showTitle,
     required this.cover,
     required this.chapters, // sorted ascending
@@ -43,6 +44,7 @@ class NovelReaderScreen extends StatefulWidget {
 
   final String sourceId;
   final String showId;
+  final String? showUrl;
   final String showTitle;
   final String? cover;
   final List<Episode> chapters;
@@ -349,6 +351,15 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       ReadEntry(
         sourceId: widget.sourceId,
         showId: widget.showId,
+        // Metadata link when the title has one, so the Continue Reading
+        // card reopens the metadata detail like streaming cards do —
+        // otherwise it reopens whichever source page the session began on.
+        showUrl: preferredHistoryUrl(
+          ProviderType.novel,
+          malId: widget.malId,
+          showId: widget.showId,
+          showUrl: widget.showUrl,
+        ),
         title: widget.showTitle,
         cover: widget.cover,
         chapterId: ep.id,

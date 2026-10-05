@@ -198,6 +198,9 @@ class AppLocalizationsAr extends AppLocalizations {
   String get custom => 'مخصص';
 
   @override
+  String get customRange => 'Custom range';
+
+  @override
   String get defaultLabel => 'الافتراضي';
 
   @override
@@ -1302,6 +1305,18 @@ class AppLocalizationsAr extends AppLocalizations {
   String get nativeTVPlayer => 'مشغّل التلفاز الأصلي';
 
   @override
+  String get tvDecoderMode => 'TV decoder priority';
+
+  @override
+  String get tvDecoderHardwareOnly => 'Hardware only';
+
+  @override
+  String get tvDecoderHardwareFirst => 'Hardware first (software fallback)';
+
+  @override
+  String get tvDecoderSoftwareFirst => 'Software first (hardware fallback)';
+
+  @override
   String get softwareAudioDolbyDTS => 'صوت برمجي (Dolby/DTS)';
 
   @override
@@ -1940,6 +1955,9 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get findEpisode => 'ابحث عن حلقة';
+
+  @override
+  String get findChapter => 'Find chapter';
 
   @override
   String get refreshChapters => 'تحديث الفصول';
@@ -2771,6 +2789,9 @@ class AppLocalizationsAr extends AppLocalizations {
   String get popularity => 'الشعبية';
 
   @override
+  String get favourites => 'Favourites';
+
+  @override
   String get sourceMaterial => 'العمل الأصلي';
 
   @override
@@ -2897,6 +2918,9 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get sort => 'ترتيب';
+
+  @override
+  String get shuffle => 'اختر عشوائيًا';
 
   @override
   String get giveItAName => 'امنحها اسمًا';

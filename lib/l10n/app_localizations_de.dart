@@ -198,6 +198,9 @@ class AppLocalizationsDe extends AppLocalizations {
   String get custom => 'Benutzerdefiniert';
 
   @override
+  String get customRange => 'Custom range';
+
+  @override
   String get defaultLabel => 'Standard';
 
   @override
@@ -1298,6 +1301,18 @@ class AppLocalizationsDe extends AppLocalizations {
   String get nativeTVPlayer => 'Nativer TV-Player';
 
   @override
+  String get tvDecoderMode => 'TV decoder priority';
+
+  @override
+  String get tvDecoderHardwareOnly => 'Hardware only';
+
+  @override
+  String get tvDecoderHardwareFirst => 'Hardware first (software fallback)';
+
+  @override
+  String get tvDecoderSoftwareFirst => 'Software first (hardware fallback)';
+
+  @override
   String get softwareAudioDolbyDTS => 'Software-Audio (Dolby/DTS)';
 
   @override
@@ -1939,6 +1954,9 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get findEpisode => 'Folge finden';
+
+  @override
+  String get findChapter => 'Find chapter';
 
   @override
   String get refreshChapters => 'Kapitel aktualisieren';
@@ -2780,6 +2798,9 @@ class AppLocalizationsDe extends AppLocalizations {
   String get popularity => 'Popularity';
 
   @override
+  String get favourites => 'Favourites';
+
+  @override
   String get sourceMaterial => 'Source';
 
   @override
@@ -2894,6 +2915,9 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get sort => 'Sortieren';
+
+  @override
+  String get shuffle => 'Zufällig auswählen';
 
   @override
   String get giveItAName => 'Gib ihm einen Namen';

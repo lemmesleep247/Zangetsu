@@ -198,6 +198,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get custom => 'カスタム';
 
   @override
+  String get customRange => 'Custom range';
+
+  @override
   String get defaultLabel => 'デフォルト';
 
   @override
@@ -1260,6 +1263,18 @@ class AppLocalizationsJa extends AppLocalizations {
   String get nativeTVPlayer => 'TV 標準プレーヤー';
 
   @override
+  String get tvDecoderMode => 'TV decoder priority';
+
+  @override
+  String get tvDecoderHardwareOnly => 'Hardware only';
+
+  @override
+  String get tvDecoderHardwareFirst => 'Hardware first (software fallback)';
+
+  @override
+  String get tvDecoderSoftwareFirst => 'Software first (hardware fallback)';
+
+  @override
   String get softwareAudioDolbyDTS => 'ソフトウェア音声（Dolby/DTS）';
 
   @override
@@ -1883,6 +1898,9 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get findEpisode => '話を探す';
+
+  @override
+  String get findChapter => 'Find chapter';
 
   @override
   String get refreshChapters => '章を更新';
@@ -2694,6 +2712,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get popularity => 'Popularity';
 
   @override
+  String get favourites => 'Favourites';
+
+  @override
   String get sourceMaterial => 'Source';
 
   @override
@@ -2808,6 +2829,9 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get sort => '選別';
+
+  @override
+  String get shuffle => 'ランダムに選ぶ';
 
   @override
   String get giveItAName => '名前を付けて';

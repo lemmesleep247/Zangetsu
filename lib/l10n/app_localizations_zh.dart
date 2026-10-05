@@ -198,6 +198,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get custom => '自定义';
 
   @override
+  String get customRange => 'Custom range';
+
+  @override
   String get defaultLabel => '默认';
 
   @override
@@ -1251,6 +1254,18 @@ class AppLocalizationsZh extends AppLocalizations {
   String get nativeTVPlayer => '系统电视播放器';
 
   @override
+  String get tvDecoderMode => 'TV decoder priority';
+
+  @override
+  String get tvDecoderHardwareOnly => 'Hardware only';
+
+  @override
+  String get tvDecoderHardwareFirst => 'Hardware first (software fallback)';
+
+  @override
+  String get tvDecoderSoftwareFirst => 'Software first (hardware fallback)';
+
+  @override
   String get softwareAudioDolbyDTS => '软件音频（Dolby/DTS）';
 
   @override
@@ -1871,6 +1886,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get findEpisode => '查找剧集';
+
+  @override
+  String get findChapter => 'Find chapter';
 
   @override
   String get refreshChapters => '刷新章节';
@@ -2676,6 +2694,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get popularity => 'Popularity';
 
   @override
+  String get favourites => 'Favourites';
+
+  @override
   String get sourceMaterial => 'Source';
 
   @override
@@ -2790,6 +2811,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sort => '种类';
+
+  @override
+  String get shuffle => '随机选择';
 
   @override
   String get giveItAName => '给它起个名字';
@@ -7795,6 +7819,9 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
 
   @override
   String get sort => '種類';
+
+  @override
+  String get shuffle => '隨機選擇';
 
   @override
   String get giveItAName => '給它取個名字';

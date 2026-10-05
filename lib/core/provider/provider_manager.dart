@@ -24,6 +24,7 @@ import 'cf_clearance_store.dart';
 import 'cf_solve_needed.dart';
 import 'crypto_ops.dart';
 import 'js_bootstrap.dart';
+import 'js_call_scheduler.dart';
 import 'js_engine.dart';
 import 'reading_provider.dart';
 
@@ -105,6 +106,15 @@ class ProviderCallAbandoned implements Exception {
 }
 
 class _JsHost {
+  /// Hard ceiling on any single provider fetch, whatever the source asked for.
+  /// A source's patience must not become everyone else's stall.
+  static const int maxProviderFetchTimeoutMs = 25000;
+
+  /// Hard ceiling on a whole `call`, across every fetch it chains. The engine
+  /// runs one call at a time, so this is what stops one slow source freezing
+  /// the app instead of just its own screen.
+  static const Duration maxProviderCallTimeout = Duration(seconds: 25);
+
   _JsHost({required this.dio}) {
     _engine = JsEngine(onChannel: _onChannel, polling: isAppleTv);
   }
@@ -139,7 +149,6 @@ class _JsHost {
   // OWN re-entrant resolves (__resolveFetch/__fireTimer/__resolveCrypto) do NOT
   // take this lock, so an in-flight call can still be fed while it pumps the JS
   // event loop — i.e. this can't deadlock.
-  Future<void> _callQueue = Future<void>.value();
 
   // Cloudflare bridge: JS providers opt into a CF-cleared request via
   // fetch(url, { browser: true }). We reuse the native WebView solver (the same
@@ -257,29 +266,15 @@ class _JsHost {
         });
   }
 
-  // Chains [action] after the current queue tail so calls run strictly one at a
-  // time; a failing call still releases the queue (errors are swallowed on the
-  // chaining future, propagated only to the caller). See [_callQueue].
-  Future<T> _serialized<T>(
-    Future<T> Function() action, {
-    bool Function()? abandoned,
-  }) {
-    final done = Completer<T>();
-    final prev = _callQueue;
-    _callQueue = done.future.then<void>((_) {}, onError: (_) {});
-    prev.whenComplete(() {
-      // Checked HERE, not at enqueue time: the whole point is the wait in
-      // between. A viewer who backed out while this sat in the queue is no
-      // longer owed an answer, and running it anyway is what made the next
-      // screen take 12s, then 24s, then 27s in the shared report.
-      if (abandoned?.call() ?? false) {
-        done.completeError(const ProviderCallAbandoned());
-        return;
-      }
-      action().then(done.complete, onError: done.completeError);
-    });
-    return done.future;
-  }
+  final _scheduler = JsCallScheduler();
+
+  /// Reads the zone the call was scheduled in. A zone rather than a parameter
+  /// because the call chain is six layers deep and threading a lane flag
+  /// through all of them is a diff nobody can review — so only the few
+  /// fire-and-forget origins set it, and everything else stays interactive.
+  CallLane _laneNow() => Zone.current[ProviderManager.backgroundKey] == true
+      ? CallLane.background
+      : CallLane.interactive;
 
   Future<String> call(
     String sourceId,
@@ -289,10 +284,22 @@ class _JsHost {
     bool Function()? abandoned,
   }) async {
     try {
-      final v = await _serialized(
-        () => _runCall(sourceId, method, args, timeout),
-        abandoned: abandoned,
-      );
+        final v = await _scheduler
+            .enqueue<String>(
+              sourceId,
+              method,
+              () => _runCall(sourceId, method, args, timeout),
+              lane: _laneNow(),
+              abandoned: abandoned,
+            )
+            // One call owns the shared engine, so a call that overruns holds
+            // every other source hostage. `maxProviderFetchTimeoutMs` bounds a
+            // single fetch, but a call is several fetches chained inside the
+            // provider, so the total could still reach ~30s (measured: a
+            // `fuckingfast.net` download ran 30306ms and 82 calls queued behind
+            // it, each then burning the full queue wait). Bound the whole call
+            // so one slow site costs its own search and nothing else.
+            .timeout(maxProviderCallTimeout);
       _health.remove(sourceId);
       return v;
     } on ProviderCallAbandoned {
@@ -488,7 +495,13 @@ class _JsHost {
       final wantCf = payload['browser'] == true || payload['cf'] == true;
       final host = Uri.parse(url).host;
       final hdr = headers.map((k, v) => MapEntry(k, v.toString()));
-      _ensureCfRestored(); // reuse a clearance solved in a previous session
+      // OWNER-DISABLED 2026-10-03: Zangetsu-provider Cloudflare handling is
+      // off (owner request). The lines below used to attach a cached
+      // clearance, retry protocol blocks over the native lane, and solve +
+      // replay real challenges. With them off, a challenged host's raw
+      // challenge page is handed to the provider as content. To re-enable,
+      // uncomment the OWNER-DISABLED lines in this function.
+      // _ensureCfRestored(); // reuse a clearance solved in a previous session
       // A cached clearance is attached; one is NOT solved for up front, even
       // when the provider asks via { browser: true }.
       //
@@ -507,56 +520,54 @@ class _JsHost {
       //
       // [wantCf] is still read: it labels the request in the log, so a source
       // that expects Cloudflare is still identifiable when one misbehaves.
-      _applyCf(host, hdr);
+      // OWNER-DISABLED 2026-10-03 (see above): no clearance is attached.
+      // _applyCf(host, hdr);
       // Did the original request carry a clearance? If so and it STILL gets
       // challenged below, that clearance is stale (e.g. a persisted cookie that
       // expired) and must be dropped rather than reused.
-      final sentClearance = _cfCookie.containsKey(host);
+      // OWNER-DISABLED 2026-10-03 (see above): nothing is ever attached now.
+      // final sentClearance = _cfCookie.containsKey(host);
       debugPrint('[fetch] $method $url${wantCf ? ' (cf)' : ''}');
       var resp = await _request(url, method, hdr, body, follow, tMs);
-      // Auto-recover from a Cloudflare challenge even without the opt-in flag:
-      // solve (once) and replay with the clearance. CRUCIALLY, also replay when
-      // the cookie was JUST solved by a concurrent fetch for this host — without
-      // this, that fetch returns the challenge ("couldn't load") and only a
-      // manual retry (which reuses the now-cached cookie) succeeds.
-      // A protocol block is not a challenge, so try the lane that can speak to
-      // it before the Cloudflare path treats it as one. Only ever after a
-      // request has already failed, so nothing that works today changes.
-      if (Platform.isAndroid && follow && _looksLikeBlocked(resp)) {
-        final viaNative = await _retryOverNative(url, method, hdr, body);
-        if (viaNative != null && (viaNative.statusCode ?? 0) < 400) {
-          debugPrint('[fetch] retried over native lane -> ${viaNative.statusCode}');
-          resp = viaNative;
-        }
-      }
-      if (_looksLikeCfChallenge(resp) && !_suppressCfSolve) {
-        // A challenge despite a clearance WE sent means it's stale → forget it
-        // (memory + disk) so the solve re-runs. A cookie a concurrent fetch just
-        // solved (sentClearance == false) is fresh — keep it and just replay.
-        if (sentClearance && _cfCookie.containsKey(host)) {
-          _cfCookie.remove(host);
-          _cfStore.forget(host);
-        }
-        if (!_cfCookie.containsKey(host) && !_cfRecentlyFailed(host)) {
-          await _solveCf(url, host);
-        }
-        if (_cfCookie.containsKey(host)) {
-          _applyCf(host, hdr);
-          resp = await _request(url, method, hdr, body, follow, tMs);
-        } else {
-          // Challenged, and we finished without a clearance — the solve failed,
-          // timed out, or is in its cool-off. Record it so the UI can offer a
-          // manual solve; the automatic path used to fail silently, leaving the
-          // source looking merely broken with nothing to press.
-          CfSolveNeeded.needsSolve(host, url, sourceId: srcId);
-        }
-      } else if (_looksLikeCfChallenge(resp) && _suppressCfSolve) {
-        // Same challenge, but this call is a `search` — the solve is
-        // deliberately skipped (see [_suppressCfSolve]) rather than popping
-        // the blocking WebView mid-sweep. Stash it so the UI can offer a
-        // solve instead of the source just silently returning nothing.
-        CfSolveNeeded.needsSolve(host, url, sourceId: srcId);
-      }
+      // OWNER-DISABLED 2026-10-03 (see above): no blocked-lane retry, no
+      // challenge solve + replay, no needs-solve recording. The raw response
+      // goes straight to the provider.
+      // if (Platform.isAndroid && follow && _looksLikeBlocked(resp)) {
+      //   final viaNative = await _retryOverNative(url, method, hdr, body);
+      //   if (viaNative != null && (viaNative.statusCode ?? 0) < 400) {
+      //     debugPrint('[fetch] retried over native lane -> ${viaNative.statusCode}');
+      //     resp = viaNative;
+      //   }
+      // }
+      // if (_looksLikeCfChallenge(resp) && !_suppressCfSolve) {
+      // OWNER-DISABLED 2026-10-03 (see above): whole challenge block off.
+      //   A challenge despite a clearance WE sent means it's stale → forget it
+      //   (memory + disk) so the solve re-runs. A cookie a concurrent fetch just
+      //   solved (sentClearance == false) is fresh — keep it and just replay.
+      // if (sentClearance && _cfCookie.containsKey(host)) {
+      //   _cfCookie.remove(host);
+      //   _cfStore.forget(host);
+      // }
+      // if (!_cfCookie.containsKey(host) && !_cfRecentlyFailed(host)) {
+      //   await _solveCf(url, host);
+      // }
+      // if (_cfCookie.containsKey(host)) {
+      //   _applyCf(host, hdr);
+      //   resp = await _request(url, method, hdr, body, follow, tMs);
+      // } else {
+      //   // Challenged, and we finished without a clearance — the solve failed,
+      //   // timed out, or is in its cool-off. Record it so the UI can offer a
+      //   // manual solve; the automatic path used to fail silently, leaving the
+      //   // source looking merely broken with nothing to press.
+      //   CfSolveNeeded.needsSolve(host, url, sourceId: srcId);
+      // }
+      // } else if (_looksLikeCfChallenge(resp) && _suppressCfSolve) {
+      //   // Same challenge, but this call is a `search` — the solve is
+      //   // deliberately skipped (see [_suppressCfSolve]) rather than popping
+      //   // the blocking WebView mid-sweep. Stash it so the UI can offer a
+      //   // solve instead of the source just silently returning nothing.
+      //   CfSolveNeeded.needsSolve(host, url, sourceId: srcId);
+      // }
       debugPrint(
         '[fetch] <- ${resp.statusCode} ${(resp.data?.toString().length ?? 0)}B $url',
       );
@@ -582,6 +593,24 @@ class _JsHost {
     }
   }
 
+  /// In-flight provider fetches, keyed by method + url + body. A second
+  /// request for a URL already being fetched waits for that one instead of
+  /// issuing a duplicate.
+  ///
+  /// Measured over one browsing session: 873 requests, 206 unique. The same
+  /// domains.json 19 times, the same TMDB title search 16 times, individual
+  /// hubcloud links 12 times each. Those duplicates saturate a phone's
+  /// connection, so every real request queues behind copies of itself — which is
+  /// what "stuck" looks like, and it was self-inflicted rather than slow
+  /// sources.
+  ///
+  /// In-flight only, deliberately: this is not a cache. Sharing a future is
+  /// free and obviously correct, whereas caching would change what a viewer
+  /// sees when a source changes under a pinned link, and would need an
+  /// invalidation story nobody asked for. The same pattern is already used for
+  /// source sweeps in `SourceMatcher._inFlight`.
+  final Map<String, Future<Response<dynamic>>> _inFlightFetches = {};
+
   Future<Response<dynamic>> _request(
     String url,
     String method,
@@ -590,9 +619,59 @@ class _JsHost {
     bool follow,
     int tMs,
   ) {
+    final key = '$method\u0000$url\u0000${body ?? ''}';
+    final running = _inFlightFetches[key];
+    if (running != null) return running;
+    final started = _requestUnshared(url, method, headers, body, follow, tMs);
+    _inFlightFetches[key] = started;
+    // Braces, NOT an arrow: Map.remove hands back the removed value, and
+    // whenComplete awaits a returned Future — an arrow would await the very
+    // future being completed and never finish.
+    unawaited(
+      started.whenComplete(() {
+        _inFlightFetches.remove(key);
+      }).then<void>((_) {}, onError: (Object _) {}),
+    );
+    return started;
+  }
+
+  Future<Response<dynamic>> _requestUnshared(
+    String url,
+    String method,
+    Map<String, String> headers,
+    dynamic body,
+    bool follow,
+    int tMs,
+  ) {
+    // `null` in Dio means "wait forever", which is what a provider fetch got
+    // whenever the source didn't ask for a timeout — and WCCCNF shows the cost:
+    // one title took 71.8s while every other request queued behind it. A
+    // source's requested timeout is a FLOOR, not a ceiling: these sources ask
+    // for 30s, and those 30s are spent inside one call that OWNS the shared JS
+    // bridge, so a hostile host stalls every source in the app (5YD3QD:
+    // `vegamovies.getDetail waited 20s in the queue`).
+    //
+    // 25s matches the hand-picked source's existing budget, so this changes
+    // nothing about how long a source the viewer chose gets. It only stops
+    // unbounded and 30s requests holding everyone else hostage. A request
+    // asking for less still gets less.
+    final ms =
+        tMs > 0 && tMs < maxProviderFetchTimeoutMs ? tMs : maxProviderFetchTimeoutMs;
     return dio.requestUri<dynamic>(
       Uri.parse(url),
       data: body,
+      // `null` here means "wait forever" in Dio, which is what a provider fetch
+      // got whenever the source didn't ask for a timeout — and WCCCNF shows what
+      // that costs: a title took 71.8s while every other request queued behind
+      // it. A source's requested timeout is a FLOOR, not a ceiling: these
+      // sources ask for 30s, and those 30s are spent inside one call that owns
+      // the shared JS bridge, so a hostile host stalls every source in the app
+      // (5YD3QD: `vegamovies.getDetail waited 20s in the queue`).
+      //
+      // 25s is the hand-picked source's existing budget, so this changes
+      // nothing about how long a source the viewer chose gets; it only stops
+      // unbounded and 30s requests from holding everyone else hostage. A
+      // request asking for less still gets less.
       options: Options(
         method: method,
         headers: headers,
@@ -600,8 +679,8 @@ class _JsHost {
         followRedirects: follow,
         maxRedirects: follow ? 5 : 0,
         validateStatus: (_) => true,
-        receiveTimeout: tMs > 0 ? Duration(milliseconds: tMs) : null,
-        sendTimeout: tMs > 0 ? Duration(milliseconds: tMs) : null,
+        receiveTimeout: Duration(milliseconds: ms),
+        sendTimeout: Duration(milliseconds: ms),
       ),
     );
   }
@@ -1101,6 +1180,14 @@ abstract class ProviderRuntimeLoader {
 /// Public manager. Owns the single shared QuickJS runtime + registered
 /// providers and extractors.
 class ProviderManager implements ProviderRuntimeLoader {
+  /// Zone key marking a provider call as housekeeping nobody is waiting on.
+  static final Object backgroundKey = Object();
+
+  /// Runs [body] with every provider call it makes tagged background, so it
+  /// queues behind the viewer's taps instead of competing with them.
+  static Future<T> inBackground<T>(Future<T> Function() body) =>
+      runZoned(body, zoneValues: {backgroundKey: true});
+
   ProviderManager({required Dio dio}) : _host = _JsHost(dio: dio);
 
   final _JsHost _host;

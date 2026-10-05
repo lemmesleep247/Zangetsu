@@ -198,6 +198,9 @@ class AppLocalizationsId extends AppLocalizations {
   String get custom => 'Kustom';
 
   @override
+  String get customRange => 'Custom range';
+
+  @override
   String get defaultLabel => 'Bawaan';
 
   @override
@@ -1298,6 +1301,18 @@ class AppLocalizationsId extends AppLocalizations {
   String get nativeTVPlayer => 'Pemutar TV bawaan';
 
   @override
+  String get tvDecoderMode => 'TV decoder priority';
+
+  @override
+  String get tvDecoderHardwareOnly => 'Hardware only';
+
+  @override
+  String get tvDecoderHardwareFirst => 'Hardware first (software fallback)';
+
+  @override
+  String get tvDecoderSoftwareFirst => 'Software first (hardware fallback)';
+
+  @override
   String get softwareAudioDolbyDTS => 'Audio perangkat lunak (Dolby/DTS)';
 
   @override
@@ -1939,6 +1954,9 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String get findEpisode => 'Cari episode';
+
+  @override
+  String get findChapter => 'Find chapter';
 
   @override
   String get refreshChapters => 'Muat ulang bab';
@@ -2778,6 +2796,9 @@ class AppLocalizationsId extends AppLocalizations {
   String get popularity => 'Populeritas';
 
   @override
+  String get favourites => 'Favourites';
+
+  @override
   String get sourceMaterial => 'Materi asal';
 
   @override
@@ -2892,6 +2913,9 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String get sort => 'Urutkan';
+
+  @override
+  String get shuffle => 'Acak';
 
   @override
   String get giveItAName => 'Beri nama';
