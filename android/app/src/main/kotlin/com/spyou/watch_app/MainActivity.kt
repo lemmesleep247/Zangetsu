@@ -13,6 +13,11 @@ import android.os.storage.StorageManager
 import android.speech.RecognizerIntent
 import android.util.Log
 import android.util.Rational
+import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
@@ -456,6 +461,13 @@ class MainActivity : AppCompatActivity(), FlutterEngineConfigurator {
                 }
             }
 
+        // Manga page OCR/offline translation. Kept on its own method channel so
+        // the reader feature does not alter player or source bridge behavior.
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "zangetsu/manga_translation",
+        ).setMethodCallHandler(MangaTranslationBridge(applicationContext))
+
         // External-player channel: list installed players + hand a stream off to
         // one via ACTION_VIEW (URL + headers + subtitles + title).
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "zangetsu/external_player")
@@ -663,6 +675,20 @@ class MainActivity : AppCompatActivity(), FlutterEngineConfigurator {
                         result.success(i.resolveActivity(packageManager) != null)
                     }
                     "listen" -> startVoiceSearch(call.argument<String>("prompt"), result)
+                    else -> result.notImplemented()
+                }
+            }
+
+        // Soft-IME force-show for TV text fields. Flutter's TextInput.show is
+        // often cancelled on leanback (`PHASE_CLIENT_REPORT_REQUESTED_VISIBLE_TYPES`);
+        // this retries via InputMethodManager + WindowInsetsController.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "zangetsu/ime")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "show" -> {
+                        showImeForced()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -1473,6 +1499,19 @@ class MainActivity : AppCompatActivity(), FlutterEngineConfigurator {
         null
     }
 
+    /// Downloaded sidecars live in private app_flutter storage, which the
+    /// FileProvider intentionally does not expose. Copy only the subtitle file
+    /// into its configured cache path, then hand the cache content URI to the
+    /// external player. Cache files remain available after this activity
+    /// returns and Android may evict them when storage is needed.
+    private fun shareSubtitleFile(path: String): Uri? {
+        val shared = stageSubtitleFile(path, cacheDir, ::sharableUri)
+        if (shared == null) {
+            Log.w(TAG, "could not stage subtitle for external playback: $path")
+        }
+        return shared
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun launchExternal(call: MethodCall, result: MethodChannel.Result) {
         try {
@@ -1507,15 +1546,11 @@ class MainActivity : AppCompatActivity(), FlutterEngineConfigurator {
                 intent.putExtra("headers", arr.toTypedArray())
                 headers["User-Agent"]?.let { intent.putExtra("User-Agent", it) }
             }
-            // Subtitles: MX-style arrays + VLC single location.
-            if (!subs.isNullOrEmpty()) {
-                val uris = subs.mapNotNull { it["url"] }.map { Uri.parse(it) }
-                if (uris.isNotEmpty()) {
-                    intent.putExtra("subs", uris.toTypedArray())
-                    intent.putExtra("subs.name", subs.map { it["name"] ?: "Subtitle" }.toTypedArray())
-                    intent.putExtra("subtitles_location", subs[0]["url"])
-                }
-            }
+            // Remote subtitle URLs keep their previous extras. Downloaded
+            // sidecars are staged in the FileProvider cache and shared with a
+            // temporary read grant so external apps can actually open them.
+            val externalSubs = resolveExternalSubtitleTracks(subs, ::shareSubtitleFile)
+            attachExternalSubtitles(intent, externalSubs)
 
             // Complete any stale pending launch defensively, then wait for this
             // one's result in onActivityResult.
@@ -1719,6 +1754,35 @@ class MainActivity : AppCompatActivity(), FlutterEngineConfigurator {
             pendingVoiceResult = null
             result.success(null)
         }
+    }
+
+    /// Force the leanback / soft keyboard up. Flutter's TextInput.show alone is
+    /// frequently cancelled on TV after a readOnly→editable upgrade; calling
+    /// both IMM and the insets controller covers OEM differences. Must target
+    /// the FlutterView that owns the InputConnection — decorView is ignored.
+    private fun showImeForced() {
+        try {
+            val root = window?.decorView ?: return
+            val view = findFlutterView(root) ?: root
+            view.requestFocus()
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            @Suppress("DEPRECATION")
+            imm.showSoftInput(view, InputMethodManager.SHOW_FORCED)
+            WindowCompat.getInsetsController(window, view)
+                .show(WindowInsetsCompat.Type.ime())
+        } catch (e: Exception) {
+            Log.w(TAG, "showImeForced failed: ${e.message}")
+        }
+    }
+
+    private fun findFlutterView(view: View): View? {
+        if (view.javaClass.name.contains("FlutterView")) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                findFlutterView(view.getChildAt(i))?.let { return it }
+            }
+        }
+        return null
     }
 
     // Reads a position/duration extra whether the player stored it as Long or Int.
