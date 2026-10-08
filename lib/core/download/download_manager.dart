@@ -23,6 +23,7 @@ import '../zmode/metadata_repository.dart';
 import '../zmode/zmode_ids.dart';
 import 'download_prefs.dart';
 import 'hls_downloader.dart';
+import 'hls_download_journal.dart';
 import 'download_record.dart';
 import 'download_service.dart';
 import 'external_subtitle_export.dart';
@@ -57,6 +58,27 @@ class DownloadManager extends ChangeNotifier {
 
   static const String boxName = 'downloads';
   static const String _sharedDir = 'Zangetsu';
+
+  /// When a source clearly supplies both cuts, keep only the selected one.
+  /// Single-cut and unlabelled lists stay untouched; language tracks on a
+  /// VideoSource are not separate Sub/Dub links and are never filtered here.
+  static List<VideoSource> sourcesForDownloadCategory(
+    List<VideoSource> sources,
+    String category,
+  ) {
+    final wanted = switch (category) {
+      'sub' => AudioKind.sub,
+      'dub' => AudioKind.dub,
+      _ => AudioKind.unknown,
+    };
+    if (wanted == AudioKind.unknown) return sources;
+
+    final hasSub = sources.any((source) => source.kind == AudioKind.sub);
+    final hasDub = sources.any((source) => source.kind == AudioKind.dub);
+    if (!hasSub || !hasDub) return sources;
+
+    return sources.where((source) => source.kind == wanted).toList();
+  }
 
   static Future<void> init() async {
     if (!Hive.isBoxOpen(boxName)) {
@@ -133,7 +155,7 @@ class DownloadManager extends ChangeNotifier {
     _listenBackgroundService();
     _listenTorrentDownloads();
     unawaited(_publishPreviouslyDownloadedSubtitles());
-    _reconcileServiceResults(); // apply HLS downloads finished while killed
+    unawaited(_recoverBackgroundHlsJobs());
   }
 
   /// Existing completed downloads predate public subtitle copies. Publish them
@@ -191,7 +213,7 @@ class DownloadManager extends ChangeNotifier {
         final id = d?['id'] as String?;
         if (id == null) return;
         final rec = _records[id];
-        if (rec == null) return;
+        if (rec == null || rec.status == DownloadStatus.canceled) return;
         _candidates.remove(id);
         var path = d?['filePath'] as String?;
         // The isolate handed back the local .ts temp; remux it to a real .mp4
@@ -277,7 +299,9 @@ class DownloadManager extends ChangeNotifier {
           final m = jsonDecode(await entity.readAsString()) as Map;
           final id = m['id'] as String?;
           final rec = id == null ? null : _records[id];
-          if (rec != null && rec.status != DownloadStatus.done) {
+          if (rec != null &&
+              rec.status != DownloadStatus.done &&
+              rec.status != DownloadStatus.canceled) {
             final status = m['status'] as String?;
             if (status == 'done') {
               _candidates.remove(id);
@@ -314,6 +338,43 @@ class DownloadManager extends ChangeNotifier {
       }
       notifyListeners();
     } catch (_) {}
+  }
+
+  /// Reconcile completed work first, then ask the foreground service to resume
+  /// any HLS jobs whose isolate was stopped with the app process.
+  Future<void> _recoverBackgroundHlsJobs() async {
+    await _reconcileServiceResults();
+    try {
+      final journal = await DownloadService.jobJournal();
+      var hasPendingJobs = false;
+      for (final job in await journal.pending()) {
+        final id = job['id'] as String?;
+        final rec = id == null ? null : _records[id];
+        if (rec == null ||
+            rec.isTorrent ||
+            rec.status == DownloadStatus.done ||
+            rec.status == DownloadStatus.failed ||
+            rec.status == DownloadStatus.canceled ||
+            rec.status == DownloadStatus.unsupported) {
+          if (id != null) await journal.remove(id);
+          continue;
+        }
+        hasPendingJobs = true;
+      }
+      if (!hasPendingJobs) return;
+
+      final service = DownloadService.instance;
+      if (await service.isRunning()) {
+        service.invoke('sync');
+      } else {
+        await service.startService();
+      }
+    } catch (e) {
+      AppLogger.instance.log(
+        '[download] could not resume background HLS jobs: $e',
+        level: 'W',
+      );
+    }
   }
 
   @override
@@ -517,11 +578,11 @@ class DownloadManager extends ChangeNotifier {
     try {
       final sources = await _repo.sources(rec.episodeUrl, sourceId: rec.sourceId);
       if (_isCanceled(rec.id)) return; // canceled while resolving
-      final ranked = _ranked(sources, rec.quality);
+      final ranked = _ranked(sources, rec.quality, category: rec.category);
       if (ranked.isEmpty) {
         // Everything this source offers is a manifest. Another source may
         // serve real files — that is worth trying before saying no.
-        if (await _tryAnotherSource(rec)) return;
+        if (await _tryAnotherSource(rec) || _isCanceled(rec.id)) return;
         AppLogger.instance.log(
           '[download] no downloadable source — ${rec.showTitle} · '
           '${rec.episodeTitle} (${sources.length} source(s), all DASH/unusable)',
@@ -539,6 +600,7 @@ class DownloadManager extends ChangeNotifier {
       _candidates[rec.id] = ranked;
       await _enqueueTaskFor(rec, ranked.first);
     } catch (e) {
+      if (_isCanceled(rec.id)) return;
       AppLogger.instance
           .log('download resolve failed (${rec.showTitle}): $e', level: 'E');
       _put(
@@ -549,8 +611,9 @@ class DownloadManager extends ChangeNotifier {
   }
 
   /// Advance [rec] to its next fallback mirror. Returns true if one was
-  /// enqueued, false when mirrors are exhausted.
+  /// enqueued or the record was canceled, false when mirrors are exhausted.
   Future<bool> _tryNext(DownloadRecord rec) async {
+    if (_isCanceled(rec.id)) return true;
     final cands = _candidates[rec.id];
     if (cands != null && cands.length > 1) {
       cands.removeAt(0); // drop the one that just failed
@@ -565,7 +628,8 @@ class DownloadManager extends ChangeNotifier {
     // undownloadable is undownloadable on every server it offers — AnimePahe
     // serves DASH from all of them. Ask the catalogue for another source
     // before giving up.
-    return _tryAnotherSource(rec);
+    final found = await _tryAnotherSource(rec);
+    return found || _isCanceled(rec.id);
   }
 
   /// Records currently mid-sweep, so a record can't start a second one for
@@ -586,9 +650,13 @@ class DownloadManager extends ChangeNotifier {
     try {
       final next = await GetIt.I<MetadataRepository>().sourcesWhere(
         rec.episodeUrl,
-        (streams) => streams.any((s) => !isDash(s)),
+        (streams) => sourcesForDownloadCategory(
+          streams,
+          rec.category,
+        ).any((s) => !isDash(s)),
       );
-      final ranked = _ranked(next.streams, rec.quality);
+      if (_isCanceled(rec.id)) return true;
+      final ranked = _ranked(next.streams, rec.quality, category: rec.category);
       if (ranked.isEmpty) return false;
       AppLogger.instance.log(
         '[download] ${rec.showTitle} · ${rec.episodeTitle}: swept past the '
@@ -600,6 +668,7 @@ class DownloadManager extends ChangeNotifier {
       await _enqueueTaskFor(rec, ranked.first);
       return true;
     } catch (e) {
+      if (_isCanceled(rec.id)) return true;
       AppLogger.instance.log(
         'download: no downloadable source for ${rec.showTitle}: $e',
         level: 'E',
@@ -690,6 +759,7 @@ class DownloadManager extends ChangeNotifier {
   Future<void> _startHlsDownload(DownloadRecord rec, VideoSource source) async {
     _put(rec.copyWith(status: DownloadStatus.downloading, progress: 0));
     notifyListeners();
+    HlsDownloadJournal? journal;
     try {
       final docs = await getApplicationDocumentsDirectory();
       final safeShow = _safe(rec.showTitle);
@@ -707,10 +777,7 @@ class DownloadManager extends ChangeNotifier {
         throw UnsupportedError('Background HLS downloads are not available on Apple TV');
       }
 
-      if (!await DownloadService.instance.isRunning()) {
-        await DownloadService.instance.startService();
-      }
-      DownloadService.instance.invoke('download', {
+      final job = <String, dynamic>{
         'id': rec.id,
         'url': source.url,
         'headers': source.headers ?? const <String, String>{},
@@ -725,8 +792,19 @@ class DownloadManager extends ChangeNotifier {
         // How many episodes run at once + segment connections per download.
         'parallel': _downloadPrefs.parallelDownloads,
         'connections': _downloadPrefs.connectionsPerDownload,
-      });
+      };
+      journal = await DownloadService.jobJournal();
+      await journal.save(job);
+      if (_isCanceled(rec.id)) {
+        await journal.remove(rec.id);
+        return;
+      }
+
+      final service = DownloadService.instance;
+      if (!await service.isRunning()) await service.startService();
+      service.invoke('download', job);
     } catch (_) {
+      await journal?.remove(rec.id);
       if (_isCanceled(rec.id)) return;
       if (await _tryNext(rec)) return;
       _put(
@@ -1022,10 +1100,21 @@ class DownloadManager extends ChangeNotifier {
     try {
       final videoPath = current.filePath!;
       final privateStorage = await getApplicationDocumentsDirectory();
-      if (!shouldExportSubtitleSidecars(
+      final destination = externalSubtitleDestination(
         videoPath: videoPath,
         privateStorageRoot: privateStorage.path,
-      )) {
+        locationUri: _downloadPrefs.locationUri,
+      );
+      if (destination == ExternalSubtitleDestination.privateStorage) {
+        return;
+      }
+      final safTreeUri =
+          externalSubtitleTreeUri(videoPath) ??
+          (_downloadPrefs.locationUri?.startsWith('content://') == true
+              ? _downloadPrefs.locationUri
+              : null);
+      if (destination == ExternalSubtitleDestination.safTree &&
+          safTreeUri == null) {
         return;
       }
       final directory = '$_sharedDir/${_safe(current.showTitle)}';
@@ -1083,29 +1172,45 @@ class DownloadManager extends ChangeNotifier {
           await staged.writeAsBytes(sourceBytes, flush: true);
         }
 
-        // Android assigns an indexed name when a MediaStore item with the same
-        // name already exists. Remove the previous sidecar first so re-downloads
-        // keep one predictable filename next to the episode.
-        String? existing;
-        try {
-          existing = await _fileDownloader.pathInSharedStorage(
+        String? publicPath;
+        if (destination == ExternalSubtitleDestination.besideVideo) {
+          final target = File('${File(videoPath).parent.path}/$filename');
+          try {
+            if (await target.exists()) await target.delete();
+            publicPath = (await staged.copy(target.path)).path;
+          } catch (_) {}
+        } else if (destination == ExternalSubtitleDestination.safTree) {
+          publicPath = await _moveIntoTree(
+            staged.path,
+            safTreeUri!,
+            filename,
+            mimeType: _subtitleMimeType(ext),
+          );
+        } else {
+          // Android assigns an indexed name when a MediaStore item with the
+          // same name already exists. Remove it first so re-downloads keep one
+          // predictable filename next to the episode.
+          String? existing;
+          try {
+            existing = await _fileDownloader.pathInSharedStorage(
+              staged.path,
+              SharedStorage.downloads,
+              directory: directory,
+            );
+          } catch (_) {}
+          if (existing != null) {
+            try {
+              await _fileDownloader.uri.deleteFile(Uri.parse(existing));
+            } catch (_) {}
+          }
+
+          publicPath = await _fileDownloader.moveFileToSharedStorage(
             staged.path,
             SharedStorage.downloads,
             directory: directory,
+            mimeType: _subtitleMimeType(ext),
           );
-        } catch (_) {}
-        if (existing != null) {
-          try {
-            await _fileDownloader.uri.deleteFile(Uri.parse(existing));
-          } catch (_) {}
         }
-
-        final publicPath = await _fileDownloader.moveFileToSharedStorage(
-          staged.path,
-          SharedStorage.downloads,
-          directory: directory,
-          mimeType: _subtitleMimeType(ext),
-        );
         if (publicPath == null) continue;
 
         // The record could have been deleted while MediaStore was writing.
@@ -1234,6 +1339,9 @@ class DownloadManager extends ChangeNotifier {
     } catch (_) {}
     if (!isAppleTv) {
       try {
+        await (await DownloadService.jobJournal()).remove(rec.id);
+      } catch (_) {}
+      try {
         DownloadService.instance.invoke('cancel', {'id': rec.id}); // HLS job (if any)
       } catch (_) {}
     }
@@ -1247,6 +1355,13 @@ class DownloadManager extends ChangeNotifier {
   /// Cancel (if active) and forget the record + delete the saved file.
   Future<void> delete(DownloadRecord rec) async {
     _candidates.remove(rec.id);
+    final current = _records[rec.id];
+    if (current != null && current.status != DownloadStatus.canceled) {
+      // Stop late callbacks/resolvers before cleanup awaits give them a chance
+      // to persist progress or completion over the delete operation.
+      _put(current.copyWith(status: DownloadStatus.canceled, progress: 0));
+      notifyListeners();
+    }
     if (rec.isTorrent) {
       try {
         await _torrentSvc.cancel(rec.id);
@@ -1257,6 +1372,9 @@ class DownloadManager extends ChangeNotifier {
       await _fileDownloader.cancelTaskWithId(rec.id);
     } catch (_) {}
     if (!isAppleTv) {
+      try {
+        await (await DownloadService.jobJournal()).remove(rec.id);
+      } catch (_) {}
       try {
         DownloadService.instance.invoke('cancel', {'id': rec.id}); // stop HLS job
       } catch (_) {}
@@ -1338,13 +1456,15 @@ class DownloadManager extends ChangeNotifier {
   Future<String?> _moveIntoTree(
     String localPath,
     String treeUri,
-    String filename,
-  ) async {
+    String filename, {
+    String mimeType = 'video/mp4',
+  }) async {
     try {
       return await _deviceChannel.invokeMethod<String>('moveIntoTree', {
         'localPath': localPath,
         'treeUri': treeUri,
         'filename': filename,
+        'mimeType': mimeType,
       });
     } catch (_) {
       return null;
@@ -1643,12 +1763,22 @@ class DownloadManager extends ChangeNotifier {
   /// each. Deleted only once the replacement is safely on disk, so a failed
   /// re-download doesn't cost the copy that already worked.
   Future<void> _markDone(DownloadRecord rec, String? path) async {
-    final latest = _records[rec.id] ?? rec;
+    var latest = _records[rec.id];
+    if (latest == null || latest.status == DownloadStatus.canceled) {
+      await _deleteMediaFile(path);
+      return;
+    }
+    final bytesTotal = latest.bytesTotal > 0 ? null : await sizeOf(path);
+    latest = _records[rec.id];
+    if (latest == null || latest.status == DownloadStatus.canceled) {
+      await _deleteMediaFile(path);
+      return;
+    }
     final done = latest.copyWith(
       status: DownloadStatus.done,
       progress: 1,
       filePath: () => path,
-      bytesTotal: latest.bytesTotal > 0 ? null : await sizeOf(path),
+      bytesTotal: bytesTotal,
       supersededPath: () => null,
     );
     _put(done);
@@ -1736,6 +1866,7 @@ class DownloadManager extends ChangeNotifier {
         allowMobileData: TorrentPrefs().allowMobileData,
       );
     } catch (e) {
+      if (_isCanceled(rec.id)) return;
       final wifi = e is PlatformException && e.code == 'wifi_only';
       AppLogger.instance
           .log('torrent download start failed (${rec.showTitle}): $e', level: 'E');
@@ -1758,10 +1889,15 @@ class DownloadManager extends ChangeNotifier {
   /// quality. 'best' = highest first; otherwise by CLOSENESS to the requested
   /// height (so 360p gets the smallest file) — ties go to the higher quality.
   /// The full ordered list doubles as the try-next fallback.
-  static List<VideoSource> _ranked(List<VideoSource> sources, String quality) {
+  static List<VideoSource> _ranked(
+    List<VideoSource> sources,
+    String quality, {
+    required String category,
+  }) {
     // Drop what cannot become a file at all, rather than finding out by
     // downloading it.
-    final list = List<VideoSource>.from(sources.where((s) => !isDash(s)));
+    final byCategory = sourcesForDownloadCategory(sources, category);
+    final list = List<VideoSource>.from(byCategory.where((s) => !isDash(s)));
     if (list.isEmpty) return const [];
     if (quality == 'best') {
       list.sort((a, b) => _height(b).compareTo(_height(a)));
