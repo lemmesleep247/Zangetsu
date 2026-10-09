@@ -211,6 +211,15 @@ class MediaItem extends Equatable {
   ];
 }
 
+/// A catalogue page keeps its paging signal even when client-side filters
+/// remove every item from that page.
+class MediaItemPage {
+  const MediaItemPage({required this.items, required this.hasMore});
+
+  final List<MediaItem> items;
+  final bool hasMore;
+}
+
 /// Decorations source catalogues routinely bolt onto a title — a year,
 /// season/part/episode markers, "Watch ... Online" wrapper words, quality or
 /// audio tags — that carry no identifying information. [titleMatches] strips
@@ -271,14 +280,16 @@ bool titleIdentityMatches(MediaItem m, String wanted, {int? wantedMalId}) {
 }
 
 /// Whether [m] is the title being looked for: same MAL id, or a normalized
-/// title (or English title) equal to [wanted] or [altTitle] once decorations
-/// (see [_stripTitleDecorations]) are stripped from both sides. This is the
-/// acceptance rule [bestTitleMatch] ranks by, exposed so callers that must
-/// reject its fallback-to-first-result can apply the same test.
+/// title (or English title) equal to [wanted], [altTitle], or one of
+/// [metadataAliases] once decorations (see [_stripTitleDecorations]) are
+/// stripped from both sides. This is the acceptance rule [bestTitleMatch]
+/// ranks by, exposed so callers that must reject its fallback-to-first-result
+/// can apply the same test.
 bool titleMatches(
   MediaItem m,
   String wanted, {
   String? altTitle,
+  Iterable<String> metadataAliases = const [],
   int? wantedMalId,
 }) {
   if (wantedMalId != null && m.malId != null && m.malId == wantedMalId) {
@@ -288,6 +299,8 @@ bool titleMatches(
     normalizeTitle(_stripTitleDecorations(wanted)),
     if (altTitle != null && altTitle.isNotEmpty)
       normalizeTitle(_stripTitleDecorations(altTitle)),
+    for (final alias in metadataAliases)
+      if (alias.isNotEmpty) normalizeTitle(_stripTitleDecorations(alias)),
   }..removeWhere((s) => s.isEmpty);
   final title = normalizeTitle(_stripTitleDecorations(m.title));
   final english = m.englishTitle == null
@@ -297,9 +310,9 @@ bool titleMatches(
 }
 
 /// Pick the search result that best matches a tapped relation / work. Prefers a
-/// [MediaItem.malId] match (exact + unique), then an exact normalized match on
-/// EITHER the English [wanted] or the Romaji [altTitle] against the result's
-/// title/englishTitle, else the first result.
+/// [MediaItem.malId] match, then an exact normalized match against the result's
+/// title/englishTitle using [wanted], [altTitle], and [metadataAliases], else
+/// the first result.
 ///
 /// The alt title matters because metadata APIs return English titles while many
 /// sources index by Romaji — tapping "Mushoku Tensei: Jobless Reincarnation
@@ -313,6 +326,7 @@ MediaItem? bestTitleMatch(
   List<MediaItem> results,
   String wanted, {
   String? altTitle,
+  Iterable<String> metadataAliases = const [],
   int? wantedMalId,
 }) {
   if (results.isEmpty) return null;
@@ -322,7 +336,14 @@ MediaItem? bestTitleMatch(
     }
   }
   for (final m in results) {
-    if (titleMatches(m, wanted, altTitle: altTitle)) return m;
+    if (titleMatches(
+      m,
+      wanted,
+      altTitle: altTitle,
+      metadataAliases: metadataAliases,
+    )) {
+      return m;
+    }
   }
   return results.first;
 }
@@ -370,7 +391,7 @@ const Map<String, String> _foldedLetters = {
   'œ': 'oe',
 };
 
-/// Lowercase + strip non-alphanumerics, for tolerant title comparison.
+/// Lowercase + strip non-letter/number characters, for tolerant title matching.
 ///
 /// Two things happen before the strip, both for the same reason: the strip
 /// DELETES what it doesn't understand, which silently turns a title into
@@ -384,5 +405,5 @@ String normalizeTitle(String s) {
   _foldedLetters.forEach((accented, plain) {
     if (out.contains(accented)) out = out.replaceAll(accented, plain);
   });
-  return out.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+  return out.replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), '');
 }

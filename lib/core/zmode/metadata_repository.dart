@@ -558,6 +558,31 @@ class MetadataRepository implements CatalogueRepository {
     return items;
   }
 
+  /// Search or filter one TMDB streaming-service catalogue. It stays on the
+  /// TMDB catalogue that owns the provider id, even if the global preference
+  /// changes while this page is open.
+  Future<MediaItemPage> streamingServicePage(
+    int providerId, {
+    String query = '',
+    MetaFilters filters = const MetaFilters(),
+    int page = 1,
+  }) async {
+    var safeFilters = filters;
+    if (safeFilters.adult && !_adultAllowed()) {
+      safeFilters = safeFilters.copyWith(adult: false);
+    }
+    final pageResult = query.trim().isEmpty
+        ? await _tmdb.browseProvider(providerId, page, filters: safeFilters)
+        : await _tmdb.searchProvider(
+            providerId,
+            query,
+            filters: safeFilters,
+            page: page,
+          );
+    pageResult.items.forEach(_remember);
+    return pageResult;
+  }
+
   @override
   Future<List<MediaItem>> search(
     String query, {
@@ -625,6 +650,10 @@ class MetadataRepository implements CatalogueRepository {
     final d = _isTmdb(c.kind)
         ? await _viaVideo((x) => x.detail(c), prefer: prefer)
         : await _viaAnime((x) => x.detail(c), prefer: prefer);
+    final metadataAliases = [
+      if (d.nativeTitle != null) d.nativeTitle!,
+      ...d.synonyms,
+    ];
     _titles[c.key] = (title: d.title, alt: d.englishTitle, malId: d.malId);
     AppLogger.instance.log(
       '[metadata] detail catalogue title="${d.title}" eps=${d.episodes.length} '
@@ -653,6 +682,7 @@ class MetadataRepository implements CatalogueRepository {
         c,
         title: d.title,
         altTitle: d.englishTitle,
+        metadataAliases: metadataAliases,
         malId: d.malId,
         // `detail` accepted `abandoned` but never consulted it, so a source
         // sweep outlived the screen that asked for it. Fast back-and-tap
@@ -719,6 +749,7 @@ class MetadataRepository implements CatalogueRepository {
       c,
       title: d.title,
       altTitle: d.englishTitle,
+      metadataAliases: metadataAliases,
       malId: d.malId,
       // `detail` accepted `abandoned` but never consulted it, so a source
       // sweep outlived the screen that asked for it. Fast back-and-tap
