@@ -34,6 +34,7 @@ import 'core/playback/my_list.dart';
 import 'core/playback/history_merge.dart';
 import 'core/playback/resume_store.dart';
 import 'core/playback/watch_history.dart';
+import 'core/profiles/viewer_profile.dart';
 import 'core/reading/read_history.dart';
 import 'core/state/active_source_cubit.dart';
 import 'core/locale/locale_controller.dart';
@@ -51,6 +52,7 @@ import 'features/auth/auth_cubit.dart';
 import 'features/home/cubit/home_cubit.dart';
 import 'features/onboarding/boot_error_screen.dart';
 import 'features/onboarding/onboarding_screen.dart';
+import 'features/profiles/profile_launch_gate.dart';
 import 'features/shell/root_shell.dart';
 import 'features/watch_together/ui/party_bar.dart';
 
@@ -332,15 +334,6 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
   /// debounce app-switching so the DB isn't hammered.
   static const Duration _syncFreshness = Duration(minutes: 2);
 
-  /// TV stays in [AppLifecycleState.resumed] for hours, so [_syncOnResume]
-  /// never fires again. Poll while foregrounded so a watch/add/remove on
-  /// another device lands without relaunching — but only when the local cache
-  /// is older than this window (see [pullFromCloudIfStale]). A 30s full
-  /// `select *` on mylist/history burned ~GB/day of PostgREST egress + logs.
-  static const Duration _foregroundPoll = Duration(minutes: 10);
-
-  Timer? _foregroundSync;
-
   void _onThemeChanged() {
     if (mounted) {
       setState(() {}); // accent changed → rebuild so the app recolours
@@ -410,7 +403,6 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
     MetadataProviderPrefs.revision.removeListener(_onMetadataProviderChanged);
     HomeRowsPrefs.revision.removeListener(_onHomeRowsChanged);
     WidgetsBinding.instance.removeObserver(this);
-    _foregroundSync?.cancel();
     _tvShellGate.dispose();
     super.dispose();
   }
@@ -427,19 +419,14 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
         unawaited(sl<AuthCubit>().revalidateIfFlagged());
       }
       _syncOnResume();
-      _startForegroundSync();
       // The wallpaper may have changed while we were away. No-op unless
       // Material You is on, and only rebuilds if the colours actually moved.
       ThemeController.refresh();
     } else if (state == AppLifecycleState.paused) {
-      _foregroundSync?.cancel();
-      _foregroundSync = null;
       // Opening the in-app player (native surface / immersive) fires paused
       // even though the user is still watching. Do not drop Rich Presence.
       discord?.onPaused();
     } else if (state == AppLifecycleState.detached) {
-      _foregroundSync?.cancel();
-      _foregroundSync = null;
       discord?.onDetached();
     }
   }
@@ -449,16 +436,6 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
   /// [MyListStore.pullFromCloudIfStale], so rapid app-switching doesn't hammer
   /// the DB). Also flushes any un-synced My List adds.
   void _syncOnResume() => _syncLibrary(maxAge: _syncFreshness);
-
-  void _startForegroundSync() {
-    _foregroundSync?.cancel();
-    // Don't wait for the first period — TV sits in resumed and phone
-    // app-switch used to skip a pull for two minutes.
-    _syncLibrary(maxAge: _foregroundPoll);
-    _foregroundSync = Timer.periodic(_foregroundPoll, (_) {
-      _syncLibrary(maxAge: _foregroundPoll);
-    });
-  }
 
   void _syncLibrary({required Duration maxAge}) {
     if (!sl.isRegistered<AuthCubit>() || !sl<AuthCubit>().state.isLoggedIn) {
@@ -502,6 +479,9 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
     try {
       await sl<AuthCubit>().restore().timeout(const Duration(seconds: 5));
       if (sl<AuthCubit>().state.isLoggedIn) {
+        await sl<ViewerProfileStore>().loadForUser(
+          displayName: sl<AuthCubit>().state.displayName,
+        );
         Future<void> cloudSync() async {
           await Future.wait([
             sl<MyListStore>().seedCloudIfNeeded(),
@@ -523,11 +503,15 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
         } else {
           await cloudSync();
         }
-        // Launch never delivers [AppLifecycleState.resumed] if the app started
-        // in the foreground (TV sits there all day). Start the poll now.
-        _startForegroundSync();
       }
     } catch (_) {}
+    if (!sl<ViewerProfileStore>().isLoadedForCurrentUser) {
+      try {
+        await sl<ViewerProfileStore>().loadForUser(
+          displayName: sl<AuthCubit>().state.displayName,
+        );
+      } catch (_) {}
+    }
     // Rows saved under a source before the browse screen started resolving
     // titles to the catalogue: move them onto the show they belong to so
     // Continue Watching stops listing the same title twice. Once, after the
@@ -576,6 +560,9 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
   /// listener mounts, so no double pull).
   Future<void> _onAuthChange(BuildContext context, AuthState state) async {
     if (state.status == AuthStatus.authenticated) {
+      await sl<ViewerProfileStore>().loadForUser(
+        displayName: state.displayName,
+      );
       Future<void> sync() async {
         await sl<MyListStore>().seedCloudIfNeeded();
         await sl<WatchHistory>().seedCloudIfNeeded();
@@ -600,6 +587,7 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
         await sync();
       }
     } else if (state.status == AuthStatus.unauthenticated) {
+      await sl<ViewerProfileStore>().loadForUser();
       await sl<MyListStore>().clearLocal();
       await sl<WatchHistory>().clearLocal();
       await sl<ReadHistory>().clearLocal();
@@ -609,7 +597,7 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
   Widget _buildShellHome() {
     final onboarded = _onboardedOverride ?? isOnboarded();
     return onboarded
-        ? RootShell()
+        ? ProfileLaunchGate(child: RootShell())
         : OnboardingScreen(
             onDone: () {
               setState(() => _onboardedOverride = true);
@@ -622,7 +610,9 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
                   ..value = true;
               } else {
                 rootNavigatorKey.currentState?.pushReplacement(
-                  MaterialPageRoute<void>(builder: (_) => RootShell()),
+                  MaterialPageRoute<void>(
+                    builder: (_) => ProfileLaunchGate(child: RootShell()),
+                  ),
                 );
               }
             },
