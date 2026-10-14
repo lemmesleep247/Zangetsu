@@ -1897,6 +1897,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get refreshEpisodes => '刷新剧集';
 
   @override
+  String get reverseList => '反向排列列表';
+
+  @override
   String get seasons => '季';
 
   @override
@@ -3013,6 +3016,10 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get notifyOnNewEpisodes => '新剧集上线时通知我';
+
+  @override
+  String get allowNotificationsForAlerts =>
+      'Allow notifications in Android settings to receive alerts.';
 
   @override
   String get syncStatusScoreProgress => '同步状态、分数和进度';
@@ -7148,6 +7155,9 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
 
   @override
   String get refreshEpisodes => '刷新劇集';
+
+  @override
+  String get reverseList => '反向排列清單';
 
   @override
   String get seasons => '季';

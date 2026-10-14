@@ -1966,6 +1966,9 @@ class AppLocalizationsAr extends AppLocalizations {
   String get refreshEpisodes => 'تحديث الحلقات';
 
   @override
+  String get reverseList => 'عكس ترتيب القائمة';
+
+  @override
   String get seasons => 'المواسم';
 
   @override
@@ -3119,6 +3122,10 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get notifyOnNewEpisodes => 'إشعار عند الحلقات الجديدة';
+
+  @override
+  String get allowNotificationsForAlerts =>
+      'Allow notifications in Android settings to receive alerts.';
 
   @override
   String get syncStatusScoreProgress => 'مزامنة الحالة والتقييم والتقدّم';

@@ -1909,6 +1909,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get refreshEpisodes => 'エピソードを更新する';
 
   @override
+  String get reverseList => 'リストを逆順にする';
+
+  @override
   String get seasons => 'シーズン';
 
   @override
@@ -3031,6 +3034,10 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get notifyOnNewEpisodes => '新しいエピソードの通知を受け取る';
+
+  @override
+  String get allowNotificationsForAlerts =>
+      'Allow notifications in Android settings to receive alerts.';
 
   @override
   String get syncStatusScoreProgress => '同期状況、スコア、進捗状況';

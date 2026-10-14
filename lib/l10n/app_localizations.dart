@@ -3754,6 +3754,12 @@ abstract class AppLocalizations {
   /// **'Refresh episodes'**
   String get refreshEpisodes;
 
+  /// No description provided for @reverseList.
+  ///
+  /// In en, this message translates to:
+  /// **'Reverse list'**
+  String get reverseList;
+
   /// No description provided for @seasons.
   ///
   /// In en, this message translates to:
@@ -5781,6 +5787,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Notify on new episodes'**
   String get notifyOnNewEpisodes;
+
+  /// No description provided for @allowNotificationsForAlerts.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow notifications in Android settings to receive alerts.'**
+  String get allowNotificationsForAlerts;
 
   /// No description provided for @syncStatusScoreProgress.
   ///

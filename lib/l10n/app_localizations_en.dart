@@ -1951,6 +1951,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get refreshEpisodes => 'Refresh episodes';
 
   @override
+  String get reverseList => 'Reverse list';
+
+  @override
   String get seasons => 'Seasons';
 
   @override
@@ -3098,6 +3101,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get notifyOnNewEpisodes => 'Notify on new episodes';
+
+  @override
+  String get allowNotificationsForAlerts =>
+      'Allow notifications in Android settings to receive alerts.';
 
   @override
   String get syncStatusScoreProgress => 'Sync status, score & progress';

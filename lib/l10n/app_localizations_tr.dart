@@ -1965,6 +1965,9 @@ class AppLocalizationsTr extends AppLocalizations {
   String get refreshEpisodes => 'Bölümleri yenile';
 
   @override
+  String get reverseList => 'Listeyi ters çevir';
+
+  @override
   String get seasons => 'Sezonlar';
 
   @override
@@ -3111,6 +3114,10 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get notifyOnNewEpisodes => 'Yeni bölümlerde haber ver';
+
+  @override
+  String get allowNotificationsForAlerts =>
+      'Allow notifications in Android settings to receive alerts.';
 
   @override
   String get syncStatusScoreProgress => 'Durum, puan ve ilerlemeyi eşitle';

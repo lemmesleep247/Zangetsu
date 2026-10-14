@@ -703,6 +703,7 @@
 	"findChapter": "Find chapter",
 	"refreshChapters": "Refresh chapters",
 	"refreshEpisodes": "Refresh episodes",
+	"reverseList": "Reverse list",
 	"seasons": "Seasons",
 	"goToEpisode": "Go to episode",
 	"episodeNumber": "Episode number",
@@ -1295,6 +1296,7 @@
 	"addToMyList": "Add to My List",
 	"notifyOnNewChapters": "Notify on new chapters",
 	"notifyOnNewEpisodes": "Notify on new episodes",
+	"allowNotificationsForAlerts": "Allow notifications in Android settings to receive alerts.",
 	"syncStatusScoreProgress": "Sync status, score & progress",
 	"seasonCount": "{count} Seasons",
 	"@seasonCount": {

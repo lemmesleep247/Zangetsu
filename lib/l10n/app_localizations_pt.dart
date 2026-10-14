@@ -1981,6 +1981,9 @@ class AppLocalizationsPt extends AppLocalizations {
   String get refreshEpisodes => 'Atualizar episódios';
 
   @override
+  String get reverseList => 'Inverter lista';
+
+  @override
   String get seasons => 'Temporadas';
 
   @override
@@ -3134,6 +3137,10 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String get notifyOnNewEpisodes => 'Avisar sobre novos episódios';
+
+  @override
+  String get allowNotificationsForAlerts =>
+      'Allow notifications in Android settings to receive alerts.';
 
   @override
   String get syncStatusScoreProgress => 'Sincronizar status, nota e progresso';
