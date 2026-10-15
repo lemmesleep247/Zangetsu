@@ -1142,6 +1142,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _wireRoom(WatchTogetherController room) {
+    if (!WatchTogetherController.isEnabled) return;
     _roomListener = () {
       _c.roomRole = room.role;
       if (mounted) setState(() {});
