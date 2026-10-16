@@ -120,7 +120,11 @@ object AniyomiInjektModules {
                 override fun InjektRegistrar.registerInjectables() {
                     addSingleton(app)
                     addSingleton(NetworkHelper(app, extensionClient))
-                    addSingleton(Json { ignoreUnknownKeys = true })
+                    // explicitNulls = false like upstream Mihon: a site that
+                    // stops sending an optional field (Atsumaru's largeImage)
+                    // decodes as null instead of throwing MissingField, so one
+                    // changed answer can't kill every call of an extension.
+                    addSingleton(Json { ignoreUnknownKeys = true; explicitNulls = false })
                     // Shueisha's MANGA Plus and friends are protobuf APIs and ask
                     // for this exactly the way they ask for Json. Upstream Mihon
                     // registers it here too. Having the class on the classpath is
