@@ -5254,6 +5254,24 @@ abstract class AppLocalizations {
   /// **'Which tabs show, and their order'**
   String get navigationBarSubtitle;
 
+  /// No description provided for @navDockBehavior.
+  ///
+  /// In en, this message translates to:
+  /// **'Dock behavior'**
+  String get navDockBehavior;
+
+  /// No description provided for @keepDockExpanded.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep dock expanded'**
+  String get keepDockExpanded;
+
+  /// No description provided for @keepDockExpandedSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep the labels visible while scrolling'**
+  String get keepDockExpandedSubtitle;
+
   /// No description provided for @connectedCount.
   ///
   /// In en, this message translates to:

@@ -131,6 +131,10 @@ void main() {
       expect(NavPrefs().startTab, NavPrefs.defaultTabs.first);
     });
 
+    test('keep-dock-expanded is off by default', () {
+      expect(NavPrefs().isDefault, isTrue);
+    });
+
     test('a chosen landing tab survives a restart', () async {
       await NavPrefs().setStartTab(DockTab.myList);
 
@@ -148,11 +152,27 @@ void main() {
 
     test('resetting forgets the landing tab too', () async {
       await NavPrefs().setStartTab(DockTab.myList);
+      await Hive.box(NavPrefs.boxName).put('keepDockExpanded', true);
       await NavPrefs().reset();
 
       expect(NavPrefs().startTab, NavPrefs.defaultTabs.first);
       expect(NavPrefs().isDefault, isTrue);
+      expect(Hive.box(NavPrefs.boxName).get('keepDockExpanded'), isNull);
     });
+
+    test(
+      'keep-dock-expanded is persisted and participates in reset state',
+      () async {
+        await NavPrefs().setKeepDockExpanded(true);
+
+        expect(NavPrefs().keepDockExpanded, isTrue);
+        expect(NavPrefs().isDefault, isFalse);
+
+        await NavPrefs().reset();
+
+        expect(NavPrefs().isDefault, isTrue);
+      },
+    );
   });
 
   group('DockTab', () {

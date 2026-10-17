@@ -2683,6 +2683,16 @@ class AppLocalizationsJa extends AppLocalizations {
   String get navigationBarSubtitle => '表示するタブと順序';
 
   @override
+  String get navDockBehavior => 'Dock behavior';
+
+  @override
+  String get keepDockExpanded => 'Keep dock expanded';
+
+  @override
+  String get keepDockExpandedSubtitle =>
+      'Keep the labels visible while scrolling';
+
+  @override
   String connectedCount(int count) {
     return '$count件接続済み';
   }

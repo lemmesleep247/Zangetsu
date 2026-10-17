@@ -126,8 +126,7 @@ class _ChapterDownloadsScreenState extends State<ChapterDownloadsScreen> {
       // both as failed (see ChapterDownload.fromJson).
       ...saved.where(
         (c) =>
-            !live.containsKey(c.id) &&
-            c.status == ChapterDownloadStatus.failed,
+            !live.containsKey(c.id) && c.status == ChapterDownloadStatus.failed,
       ),
     ];
 
@@ -220,9 +219,7 @@ class _ChapterDownloadsScreenState extends State<ChapterDownloadsScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
-      ..showSnackBar(
-        SnackBar(content: Text(l10n.clearedFailedCount(n))),
-      );
+      ..showSnackBar(SnackBar(content: Text(l10n.clearedFailedCount(n))));
   }
 
   Widget _searchField() {
@@ -266,9 +263,8 @@ class _ChapterDownloadsScreenState extends State<ChapterDownloadsScreen> {
 }
 
 /// Small glyph that tells a manga chapter from a novel one at a glance.
-IconData chapterIcon(ContentMode mode) => mode == ContentMode.novel
-    ? Icons.article_rounded
-    : Icons.menu_book_rounded;
+IconData chapterIcon(ContentMode mode) =>
+    mode == ContentMode.novel ? Icons.article_rounded : Icons.menu_book_rounded;
 
 /// One chapter that's running, queued, or dead. The X cancels a live one and
 /// clears a failed one — both end up dropping the record and its files.
@@ -295,9 +291,7 @@ class _ChapterProgressTile extends StatelessWidget {
   }
 
   static String _titleOf(AppLocalizations l10n, ChapterDownload chapter) =>
-      chapter.chapterTitle.trim().isEmpty
-          ? l10n.chapter
-          : chapter.chapterTitle;
+      chapter.chapterTitle.trim().isEmpty ? l10n.chapter : chapter.chapterTitle;
 
   static String _subtitleOf(
     AppLocalizations l10n,
@@ -425,6 +419,8 @@ class _ChapterGroup extends StatelessWidget {
                         ? CachedNetworkImage(
                             imageUrl: head.cover!,
                             fit: BoxFit.cover,
+                            // 44x62 thumb: decode small, not full poster.
+                            memCacheWidth: 132,
                             errorWidget: (c, u, e) =>
                                 ColoredBox(color: AppColors.surface2),
                           )
@@ -558,7 +554,11 @@ class _SavedChapterTile extends StatelessWidget {
     return ListTile(
       onTap: onTap,
       contentPadding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
-      leading: Icon(chapterIcon(chapter.mode), color: AppColors.accent, size: 26),
+      leading: Icon(
+        chapterIcon(chapter.mode),
+        color: AppColors.accent,
+        size: 26,
+      ),
       title: Text(
         chapter.chapterTitle.trim().isEmpty
             ? l10n.chapter

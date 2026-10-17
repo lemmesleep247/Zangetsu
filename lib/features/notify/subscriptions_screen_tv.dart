@@ -93,6 +93,8 @@ class _SubscriptionsScreenTvState extends State<SubscriptionsScreenTv> {
                                         imageUrl: s.cover!,
                                         httpHeaders: s.coverHeaders,
                                         fit: BoxFit.cover,
+                                        // 44x62 thumb: decode small, not full poster.
+                                        memCacheWidth: 132,
                                         errorWidget: (_, _, _) => ColoredBox(
                                           color: AppColors.surface2,
                                         ),

@@ -960,6 +960,9 @@
 	"applyChanges": "Apply changes",
 	"navigationBar": "Navigation bar",
 	"navigationBarSubtitle": "Which tabs show, and their order",
+	"navDockBehavior": "Dock behavior",
+	"keepDockExpanded": "Keep dock expanded",
+	"keepDockExpandedSubtitle": "Keep the labels visible while scrolling",
 	"connectedCount": "{count} connected",
 	"@connectedCount": {
 		"placeholders": {

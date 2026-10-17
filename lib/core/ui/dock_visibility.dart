@@ -47,7 +47,13 @@ class DockScrollCollapse {
 
   /// Feed a [ScrollNotification]. Always returns false — this observes the
   /// scroll, it never consumes it.
-  static bool onNotification(ScrollNotification n) {
+  static bool onNotification(ScrollNotification n, {bool enabled = true}) {
+    if (!enabled) {
+      _acc = 0;
+      dockCollapsedByScroll.value = false;
+      return false;
+    }
+
     // Home's poster rails scroll horizontally inside the vertical page, and
     // their notifications bubble to the same listener. Flicking a rail is not
     // a reason to change the dock.

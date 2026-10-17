@@ -487,7 +487,10 @@ class _RootShellTvState extends State<RootShellTv> with WidgetsBindingObserver {
   }
 
   List<Widget> get _pages {
-    final shared = buildShellPages(_searchFocusSignal);
+    final shared = buildShellPages(
+      _searchFocusSignal,
+      homeIsActive: _index == 0,
+    );
     final pages = <Widget>[
       ...shared.sublist(0, 3), // Home, Search, My List
       const DownloadsScreen(),

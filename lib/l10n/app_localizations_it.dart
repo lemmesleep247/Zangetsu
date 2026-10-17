@@ -2771,6 +2771,16 @@ class AppLocalizationsIt extends AppLocalizations {
   String get navigationBarSubtitle => 'Quali schede mostrare e in che ordine';
 
   @override
+  String get navDockBehavior => 'Dock behavior';
+
+  @override
+  String get keepDockExpanded => 'Keep dock expanded';
+
+  @override
+  String get keepDockExpandedSubtitle =>
+      'Keep the labels visible while scrolling';
+
+  @override
   String connectedCount(int count) {
     return '$count connessi';
   }

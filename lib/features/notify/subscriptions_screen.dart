@@ -152,6 +152,8 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                 child: CachedNetworkImage(
                   imageUrl: a.imageUrl!,
                   fit: BoxFit.cover,
+                  // 44x44 icon: decode small.
+                  memCacheWidth: 132,
                   errorWidget: (_, _, _) => iconAvatar,
                 ),
               ),
@@ -189,8 +191,9 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                 imageUrl: s.cover!,
                 httpHeaders: s.coverHeaders,
                 fit: BoxFit.cover,
-                errorWidget: (_, _, _) =>
-                    ColoredBox(color: AppColors.surface2),
+                // 44x62 thumb: decode small, not full poster.
+                memCacheWidth: 132,
+                errorWidget: (_, _, _) => ColoredBox(color: AppColors.surface2),
               )
             : ColoredBox(color: AppColors.surface2),
       ),

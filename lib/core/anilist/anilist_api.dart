@@ -47,7 +47,7 @@ String searchMediaQuery(MediaKind kind, {bool novelFormat = false}) {
       : '';
   return 'query(\$q:String,\$n:Int){ Page(perPage:\$n){ media(search:\$q,type:${_anilistType(kind)}$formatArg){ '
       'id idMal ${_totalCountFields(kind)} format seasonYear '
-      'title{ romaji english native } coverImage{ medium } } } }';
+      'title{ romaji english native } coverImage{ large } } } }';
 }
 
 /// Query text for the library read-back ([AniListService.fetchList]).
@@ -262,8 +262,8 @@ class AniListApi {
       'node{ id name{full} image{medium} } '
       'voiceActors(language:JAPANESE,sort:[RELEVANCE]){ name{full} } } } '
       'relations{ edges{ relationType '
-      'node{ id idMal type format title{romaji english native} coverImage{medium} } } } '
-      'recommendations(sort:RATING_DESC,perPage:16){ edges{ node{ mediaRecommendation{ id idMal type format title{romaji english native} coverImage{medium} } } } }';
+      'node{ id idMal type format title{romaji english native} coverImage{large} } } } '
+      'recommendations(sort:RATING_DESC,perPage:16){ edges{ node{ mediaRecommendation{ id idMal type format title{romaji english native} coverImage{large} } } } }';
 
   /// Manga/novel twin of [_extrasSelection].
   ///
@@ -276,8 +276,8 @@ class AniListApi {
       'staff(sort:[RELEVANCE],perPage:6){ edges{ role '
       'node{ id name{full} image{medium} } } } '
       'relations{ edges{ relationType '
-      'node{ id idMal type format title{romaji english native} coverImage{medium} } } } '
-      'recommendations(sort:RATING_DESC,perPage:16){ edges{ node{ mediaRecommendation{ id idMal type format title{romaji english native} coverImage{medium} } } } }';
+      'node{ id idMal type format title{romaji english native} coverImage{large} } } } '
+      'recommendations(sort:RATING_DESC,perPage:16){ edges{ node{ mediaRecommendation{ id idMal type format title{romaji english native} coverImage{large} } } } }';
 
   /// Cast + relations for a MANGA or NOVEL, resolved by title.
   ///
@@ -375,7 +375,7 @@ class AniListApi {
     final d = await _gql(
       'query(\$id:Int){ Media(id:\$id,type:ANIME){ relations{ edges{ '
       'relationType node{ id idMal format episodes '
-      'title{romaji english native} coverImage{medium} } } } } }',
+      'title{romaji english native} coverImage{large} } } } } }',
       {'id': anilistId},
     );
     final edges = (d?['Media'] is Map) ? d!['Media']['relations'] : null;
@@ -397,7 +397,7 @@ class AniListApi {
         format: node['format'] as String?,
         title: title,
         cover: (node['coverImage'] is Map)
-            ? node['coverImage']['medium'] as String?
+            ? node['coverImage']['large'] as String?
             : null,
         episodes: (node['episodes'] as num?)?.toInt(),
       ));
@@ -589,7 +589,7 @@ class AniListApi {
         final title = aniListTitle(t, titleLanguagePref);
         if (title == null || title.isEmpty) continue;
         final cover = (node['coverImage'] is Map)
-            ? node['coverImage']['medium'] as String?
+            ? node['coverImage']['large'] as String?
             : null;
         relations.add(
           MediaRelation(
@@ -631,7 +631,7 @@ class AniListApi {
             title: title,
             romaji: (t is Map) ? t['romaji'] as String? : null,
             cover: (rec['coverImage'] is Map)
-                ? rec['coverImage']['medium'] as String?
+                ? rec['coverImage']['large'] as String?
                 : null,
             relation: 'Recommended',
             malId: (rec['idMal'] as num?)?.toInt(),

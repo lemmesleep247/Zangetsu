@@ -2778,6 +2778,16 @@ class AppLocalizationsFr extends AppLocalizations {
   String get navigationBarSubtitle => 'Onglets affichés et leur ordre';
 
   @override
+  String get navDockBehavior => 'Dock behavior';
+
+  @override
+  String get keepDockExpanded => 'Keep dock expanded';
+
+  @override
+  String get keepDockExpandedSubtitle =>
+      'Keep the labels visible while scrolling';
+
+  @override
   String connectedCount(int count) {
     return '$count connectés';
   }

@@ -100,17 +100,24 @@ import 'see_all_screen.dart';
 /// Stateful for the per-item lazy hero-description cache and the navigation
 /// helpers.
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.isTabActive = true});
+
+  final bool isTabActive;
 
   @override
   Widget build(BuildContext context) {
     // Use the shared singleton so the splash can warm it before this mounts.
-    return BlocProvider.value(value: sl<HomeCubit>(), child: const _HomeView());
+    return BlocProvider.value(
+      value: sl<HomeCubit>(),
+      child: _HomeView(isTabActive: isTabActive),
+    );
   }
 }
 
 class _HomeView extends StatefulWidget {
-  const _HomeView();
+  const _HomeView({required this.isTabActive});
+
+  final bool isTabActive;
 
   @override
   State<_HomeView> createState() => _HomeViewState();
@@ -781,6 +788,7 @@ class _HomeViewState extends State<_HomeView>
           onToggleList: toggleList,
           meta: _heroMeta,
           style: HeroTransition.cinematic,
+          isActive: widget.isTabActive,
         );
     }
   }

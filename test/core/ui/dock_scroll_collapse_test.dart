@@ -94,6 +94,18 @@ void main() {
     expect(dockCollapsedByScroll.value, isFalse);
   });
 
+  testWidgets('disabled collapse keeps the dock expanded while scrolling', (
+    t,
+  ) async {
+    final c = await boot(t);
+
+    expect(
+      DockScrollCollapse.onNotification(_scroll(c, 80), enabled: false),
+      isFalse,
+    );
+    expect(dockCollapsedByScroll.value, isFalse);
+  });
+
   testWidgets('coming back near the top always restores it', (t) async {
     final c = await boot(t);
     drag(c, 70);

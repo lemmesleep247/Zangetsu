@@ -14,6 +14,13 @@ import '../mihon/mihon_image_provider.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 
+const _posterTextScrim = LinearGradient(
+  begin: Alignment.bottomCenter,
+  end: Alignment.topCenter,
+  colors: [Color(0x8C0B0B0F), Color(0x2E0B0B0F), Color(0x000B0B0F)],
+  stops: [0, 0.26, 0.68],
+);
+
 class PosterCard extends StatefulWidget {
   const PosterCard({
     super.key,
@@ -311,7 +318,7 @@ class _PosterCardState extends State<PosterCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: ClipRRect(
+                child: ClipRSuperellipse(
                   borderRadius: BorderRadius.circular(12),
                   child: Stack(
                     fit: StackFit.expand,
@@ -357,9 +364,10 @@ class _PosterCardState extends State<PosterCard> {
                           errorWidget: (context, url, err) =>
                               ColoredBox(color: AppColors.surface2),
                         ),
-                      const DecoratedBox(
-                        decoration: BoxDecoration(gradient: AppColors.scrim),
-                      ),
+                      if (titleInside || hasBottomBadges || hasRightBadges)
+                        const DecoratedBox(
+                          decoration: BoxDecoration(gradient: _posterTextScrim),
+                        ),
                       if (widget.qualityBadge != null &&
                           (prefs?.posterQualityBadge ?? true))
                         Positioned(

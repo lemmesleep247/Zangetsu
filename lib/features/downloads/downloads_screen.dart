@@ -107,7 +107,9 @@ class _DownloadsScreenState extends State<DownloadsScreen>
               children: [
                 Text(
                   l10n.savingTo,
-                  style: AppText.caption.copyWith(color: AppColors.textTertiary),
+                  style: AppText.caption.copyWith(
+                    color: AppColors.textTertiary,
+                  ),
                 ),
                 Text(
                   label,
@@ -175,9 +177,12 @@ class _DownloadsScreenState extends State<DownloadsScreen>
                   child: Row(
                     children: [
                       Expanded(child: Text(title, style: AppText.headline)),
-                      Text('$value', style: AppText.headline.copyWith(
-                        color: AppColors.accent,
-                      )),
+                      Text(
+                        '$value',
+                        style: AppText.headline.copyWith(
+                          color: AppColors.accent,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -432,8 +437,9 @@ class _DownloadsScreenState extends State<DownloadsScreen>
     final showIds = groups.keys.toList();
     final rows = <Widget>[];
     for (final id in showIds) {
-      final recs = [...groups[id]!]
-        ..sort((a, b) => (a.episodeNumber ?? 0).compareTo(b.episodeNumber ?? 0));
+      final recs = [
+        ...groups[id]!,
+      ]..sort((a, b) => (a.episodeNumber ?? 0).compareTo(b.episodeNumber ?? 0));
       final head = recs.first;
 
       List<DownloadRecord> episodes = recs;
@@ -471,9 +477,7 @@ class _DownloadsScreenState extends State<DownloadsScreen>
     return ListView(
       // Clear the floating dock, which overlays content (this tab has no
       // reserved space of its own for it).
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.paddingOf(context).bottom,
-      ),
+      padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
       children: [
         _summaryStrip(
           count: done.length,
@@ -561,10 +565,13 @@ class _ShowGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     final head = records.first;
-    final doneRecs =
-        records.where((r) => r.status == DownloadStatus.done).toList();
+    final doneRecs = records
+        .where((r) => r.status == DownloadStatus.done)
+        .toList();
     final groupBytes = doneRecs.fold<int>(0, (s, r) => s + r.bytesTotal);
-    final sizeSuffix = groupBytes > 0 ? ' · ${fmtDownloadSize(groupBytes)}' : '';
+    final sizeSuffix = groupBytes > 0
+        ? ' · ${fmtDownloadSize(groupBytes)}'
+        : '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -584,6 +591,8 @@ class _ShowGroup extends StatelessWidget {
                             imageUrl: head.cover!,
                             httpHeaders: head.coverHeaders,
                             fit: BoxFit.cover,
+                            // 44x62 thumb: decode small, not full poster.
+                            memCacheWidth: 132,
                             errorWidget: (c, u, e) =>
                                 ColoredBox(color: AppColors.surface2),
                           )
@@ -603,7 +612,10 @@ class _ShowGroup extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        l10n.ofTotalDownloaded(doneRecs.length, records.length) +
+                        l10n.ofTotalDownloaded(
+                              doneRecs.length,
+                              records.length,
+                            ) +
                             sizeSuffix,
                         style: AppText.caption,
                       ),
@@ -790,8 +802,10 @@ class DownloadTile extends StatelessWidget {
       if (t.isEmpty || t == short || t == l10n.episodeLabel(n)) return short;
       return l10n.episodeWithTitleDot(n, t);
     }
-    final generic =
-        l10n.episodeSemantic(1).replaceFirst(' 1', '').replaceFirst('1', '');
+    final generic = l10n
+        .episodeSemantic(1)
+        .replaceFirst(' 1', '')
+        .replaceFirst('1', '');
     return (t.isEmpty || t == generic) ? generic : '$generic · $t';
   }
 
@@ -803,21 +817,23 @@ class DownloadTile extends StatelessWidget {
     }
     final pct = (record.progress * 100).round();
     return switch (record.status) {
-      DownloadStatus.done => record.bytesTotal > 0
-          ? fmtDownloadSize(record.bytesTotal)
-          : l10n.downloaded,
-      DownloadStatus.downloading => record.bytesTotal > 0
-          ? l10n.downloadProgressPercentOfSize(
-              pct,
-              fmtDownloadSize(record.bytesTotal),
-            ) + _torrentSuffix(l10n)
-          : l10n.downloadProgressPercent(pct) + _torrentSuffix(l10n),
+      DownloadStatus.done =>
+        record.bytesTotal > 0
+            ? fmtDownloadSize(record.bytesTotal)
+            : l10n.downloaded,
+      DownloadStatus.downloading =>
+        record.bytesTotal > 0
+            ? l10n.downloadProgressPercentOfSize(
+                    pct,
+                    fmtDownloadSize(record.bytesTotal),
+                  ) +
+                  _torrentSuffix(l10n)
+            : l10n.downloadProgressPercent(pct) + _torrentSuffix(l10n),
       DownloadStatus.paused => l10n.downloadPausedProgress(pct),
       DownloadStatus.finalizing => l10n.downloadFinalizing,
       DownloadStatus.queued => l10n.downloadQueued,
       DownloadStatus.resolving => l10n.downloadPreparing,
-      DownloadStatus.unsupported =>
-        record.error ?? l10n.notAvailableOfflineYet,
+      DownloadStatus.unsupported => record.error ?? l10n.notAvailableOfflineYet,
       DownloadStatus.failed => record.error ?? l10n.downloadFailedStatus,
       DownloadStatus.canceled => l10n.downloadCanceled,
     };
@@ -832,9 +848,11 @@ class DownloadTile extends StatelessWidget {
     if (p.peers > 0) parts.add(l10n.peerCount(p.peers));
     if (p.downSpeedBps > 0) {
       final mb = p.downSpeedBps / (1024 * 1024);
-      parts.add(mb >= 1
-          ? l10n.downloadSpeedMbps(mb.toStringAsFixed(1))
-          : l10n.downloadSpeedKbps((p.downSpeedBps / 1024).round()));
+      parts.add(
+        mb >= 1
+            ? l10n.downloadSpeedMbps(mb.toStringAsFixed(1))
+            : l10n.downloadSpeedKbps((p.downSpeedBps / 1024).round()),
+      );
     }
     return parts.isEmpty ? '' : ' · ${parts.join(' · ')}';
   }
@@ -998,7 +1016,10 @@ class _TileMenu extends StatelessWidget {
           children: [
             Icon(icon, size: 20, color: AppColors.textPrimary),
             const SizedBox(width: 12),
-            Text(label, style: AppText.body.copyWith(color: AppColors.textPrimary)),
+            Text(
+              label,
+              style: AppText.body.copyWith(color: AppColors.textPrimary),
+            ),
           ],
         ),
       );

@@ -84,6 +84,10 @@ class SourceIconTile extends StatelessWidget {
                 // cut off. contain shrinks a wide logo instead of beheading
                 // it; square icons look the same either way.
                 fit: BoxFit.contain,
+                // Width only: setting both cache dimensions would decode to
+                // those exact pixels and squash wide logos square before
+                // contain ever sees them.
+                memCacheWidth: (size * 3).round(),
                 placeholder: (context, url) => _letterTile,
                 errorWidget: (context, url, error) => _letterTile,
               ),

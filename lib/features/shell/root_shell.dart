@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -25,6 +24,7 @@ import '../../core/zmode/zmode_prefs.dart';
 import '../../l10n/ui_strings.dart';
 import '../../l10n/l10n.dart';
 import '../../core/ui/nav_prefs.dart';
+import '../../core/ui/frosted_surface.dart';
 import '../downloads/downloads_screen.dart';
 import '../history/history_screen.dart';
 import '../profiles/viewer_profiles_screen.dart';
@@ -46,8 +46,11 @@ import 'root_shell_tv.dart';
 /// (re)selected on TV so the embedded search screen can auto-focus its
 /// field. Phone has no Search dock tab any more — Search moved to a Home
 /// header icon — so [RootShell] always passes null here.
-List<Widget> buildShellPages(ValueNotifier<int>? searchFocusSignal) => [
-  const HomeScreen(),
+List<Widget> buildShellPages(
+  ValueNotifier<int>? searchFocusSignal, {
+  bool homeIsActive = true,
+}) => [
+  HomeScreen(isTabActive: homeIsActive),
   SearchScreen(showBack: false, focusSignal: searchFocusSignal),
   const MyListScreen(),
   const SettingsScreen(),
@@ -89,6 +92,9 @@ class _RootShellState extends State<RootShell>
   late final NavPrefs _navPrefs = sl.isRegistered<NavPrefs>()
       ? sl<NavPrefs>()
       : NavPrefs();
+
+  /// Cached for the scroll callback: don't read local storage during scrolling.
+  late bool _keepDockExpanded = _navPrefs.keepDockExpanded;
 
   /// Double-back-to-exit: timestamp of the last root Back press. A second Back
   /// within 2s exits the app; the first just shows the "press back again" toast.
@@ -183,6 +189,11 @@ class _RootShellState extends State<RootShell>
   /// land somewhere that still exists instead of showing a page with no item.
   void _onTabsChanged() {
     if (!mounted) return;
+    final keepDockExpanded = _navPrefs.keepDockExpanded;
+    if (keepDockExpanded != _keepDockExpanded) {
+      _keepDockExpanded = keepDockExpanded;
+      DockScrollCollapse.reset();
+    }
     final visible = _visibleTabs();
     setState(() {
       if (!visible.contains(_tab)) _tab = visible.first;
@@ -260,7 +271,7 @@ class _RootShellState extends State<RootShell>
   /// Search is no longer a phone dock tab (it's a Home header icon now), so
   /// this never places `shared[1]`. The Profile dock item opens Settings.
   List<Widget> _pagesFor(List<DockTab> tabs, String profileId) {
-    final shared = buildShellPages(null);
+    final shared = buildShellPages(null, homeIsActive: _tab == DockTab.home);
     return [
       for (final t in tabs)
         KeyedSubtree(
@@ -285,6 +296,9 @@ class _RootShellState extends State<RootShell>
     if (sl<AppMode>().isTv) {
       return deferContent ? const SizedBox.expand() : const RootShellTv();
     }
+    if (deferContent) {
+      return ColoredBox(color: AppColors.bg, child: const SizedBox.expand());
+    }
     return PopScope(
       // Intercept Back at the app root: first press toasts, second exits.
       canPop: false,
@@ -306,48 +320,49 @@ class _RootShellState extends State<RootShell>
           // Content runs under the floating dock (screens keep their own bottom
           // padding so the last row scrolls clear of it).
           extendBody: true,
-          body: deferContent
-              ? const SizedBox.expand()
-              : NotificationListener<ScrollNotification>(
-                  // One place, so no screen has to know the dock exists. Returns
-                  // false throughout — it reads the scroll, never eats it.
-                  onNotification: DockScrollCollapse.onNotification,
-                  child: Builder(
-                    builder: (context) {
-                      final visible = _visibleTabs();
-                      final active = visible.indexOf(_tab);
-                      return AnimatedBuilder(
-                        animation: _switch,
-                        builder: (context, child) {
-                          final v = _switch.value;
-                          // Incoming tab fades in from 0.4 and slides up 20px. Never blanks.
-                          return Opacity(
-                            opacity: 0.4 + 0.6 * v,
-                            child: Transform.translate(
-                              offset: Offset(0, (1 - v) * 20),
-                              child: child,
-                            ),
-                          );
-                        },
-                        // RepaintBoundary → the page is a single cached layer the transition
-                        // just composites (opacity + translate), so no repaint per frame.
-                        child: RepaintBoundary(
-                          child: IndexedStack(
-                            // indexOf can be -1 for one frame if the mode flipped before
-                            // the listener ran; clamp rather than throw.
-                            index: active < 0 ? 0 : active,
-                            children: _pagesFor(
-                              visible,
-                              sl.isRegistered<ViewerProfileStore>()
-                                  ? sl<ViewerProfileStore>().activeId
-                                  : 'default',
-                            ),
-                          ),
-                        ),
-                      );
-                    },
+          body: NotificationListener<ScrollNotification>(
+            // One place, so no screen has to know the dock exists. Returns
+            // false throughout — it reads the scroll, never eats it.
+            onNotification: (notification) => DockScrollCollapse.onNotification(
+              notification,
+              enabled: !_keepDockExpanded,
+            ),
+            child: Builder(
+              builder: (context) {
+                final visible = _visibleTabs();
+                final active = visible.indexOf(_tab);
+                return AnimatedBuilder(
+                  animation: _switch,
+                  builder: (context, child) {
+                    final v = _switch.value;
+                    // Incoming tab fades in from 0.4 and slides up 20px. Never blanks.
+                    return Opacity(
+                      opacity: 0.4 + 0.6 * v,
+                      child: Transform.translate(
+                        offset: Offset(0, (1 - v) * 20),
+                        child: child,
+                      ),
+                    );
+                  },
+                  // RepaintBoundary → the page is a single cached layer the transition
+                  // just composites (opacity + translate), so no repaint per frame.
+                  child: RepaintBoundary(
+                    child: IndexedStack(
+                      // indexOf can be -1 for one frame if the mode flipped before
+                      // the listener ran; clamp rather than throw.
+                      index: active < 0 ? 0 : active,
+                      children: _pagesFor(
+                        visible,
+                        sl.isRegistered<ViewerProfileStore>()
+                            ? sl<ViewerProfileStore>().activeId
+                            : 'default',
+                      ),
+                    ),
                   ),
-                ),
+                );
+              },
+            ),
+          ),
           bottomNavigationBar: ValueListenableBuilder<bool>(
             valueListenable: dockHiddenBySection,
             builder: (context, sectionOpen, _) {
@@ -425,7 +440,7 @@ class _RootShellState extends State<RootShell>
                         child: ValueListenableBuilder<bool>(
                           valueListenable: dockCollapsedByScroll,
                           builder: (context, collapsed, child) => _FloatingDock(
-                            collapsed: collapsed,
+                            collapsed: collapsed && !_keepDockExpanded,
                             tabs: _visibleTabs(),
                             active: _tab,
                             onSelected: _onTabSelected,
@@ -622,39 +637,30 @@ class _FloatingDock extends StatelessWidget {
     final pillPad = 9 - 5 * t;
     return Padding(
       padding: EdgeInsets.fromLTRB(side, 0, side, bottomInset + 12),
-      child: ClipRRect(
+      child: FakeFrost(
+        key: const ValueKey('dockPill'),
         borderRadius: BorderRadius.circular(26),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: Container(
-            padding: EdgeInsets.symmetric(horizontal: 6, vertical: pillPad),
-            decoration: BoxDecoration(
-              // Light enough that content ghosts through even on dark
-              // screens (My List / Settings) — 0.75 read as a solid slab
-              // anywhere the page behind wasn't bright.
-              color: AppColors.surface.withValues(alpha: 0.55),
-              borderRadius: BorderRadius.circular(26),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
-            ),
-            child: Row(
-              children: [
-                for (final tab in first) _item(context, tab, labels),
-                if (centre != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    // Sized down rather than scaled in place: it is the tallest
-                    // thing in the row, so leaving it at 50 would hold the
-                    // whole dock open no matter what the tabs did.
-                    child: SizedBox(
-                      width: fab,
-                      height: fab,
-                      child: FittedBox(fit: BoxFit.contain, child: centre!),
-                    ),
-                  ),
-                for (final tab in rest) _item(context, tab, labels),
-              ],
-            ),
-          ),
+        opacity: 0.55,
+        blur: true,
+        blurSigma: 14,
+        padding: EdgeInsets.symmetric(horizontal: 6, vertical: pillPad),
+        child: Row(
+          children: [
+            for (final tab in first) _item(context, tab, labels),
+            if (centre != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                // Sized down rather than scaled in place: it is the tallest
+                // thing in the row, so leaving it at 50 would hold the
+                // whole dock open no matter what the tabs did.
+                child: SizedBox(
+                  width: fab,
+                  height: fab,
+                  child: FittedBox(fit: BoxFit.contain, child: centre!),
+                ),
+              ),
+            for (final tab in rest) _item(context, tab, labels),
+          ],
         ),
       ),
     );

@@ -28,7 +28,7 @@ const _entryAnimeGolden =
 const _searchMediaAnimeGolden =
     r'query($q:String,$n:Int){ Page(perPage:$n){ media(search:$q,type:ANIME){ '
     r'id idMal episodes format seasonYear '
-    r'title{ romaji english native } coverImage{ medium } } } }';
+    r'title{ romaji english native } coverImage{ large } } } }';
 // anilist_service.dart — the fetchList() library read. `format` is NOT
 // selected here: it only exists on the manga variant, so the anime request
 // must not grow a field through the manga path (the reason this golden
@@ -87,7 +87,7 @@ Map<String, dynamic> _entry({
 };
 
 void main() {
-  group('anime queries — golden (byte-identical to pre-Task-15 text)', () {
+  group('anime queries — golden', () {
     test('mediaByMalIdQuery', () {
       expect(mediaByMalIdQuery(MediaKind.anime), _malIdAnimeGolden);
     });

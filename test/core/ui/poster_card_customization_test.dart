@@ -122,7 +122,7 @@ void main() {
     );
     await tester.pump();
 
-    final artwork = find.byType(ClipRRect);
+    final artwork = find.byType(ClipRSuperellipse);
     final artworkRect = tester.getRect(artwork);
     final actionRect = tester.getRect(find.text('Action'));
     final adultRect = tester.getRect(find.text('18+'));
@@ -165,7 +165,7 @@ void main() {
     );
     await tester.pump();
 
-    final artwork = find.byType(ClipRRect);
+    final artwork = find.byType(ClipRSuperellipse);
     expect(
       find.descendant(of: artwork, matching: find.text('Action')),
       findsNothing,
@@ -337,7 +337,7 @@ void main() {
     expect(find.text('Actual series title'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.byType(ClipRRect),
+        of: find.byType(ClipRSuperellipse),
         matching: find.text('Actual series title'),
       ),
       findsOneWidget,
@@ -376,14 +376,14 @@ void main() {
 
     expect(
       find.descendant(
-        of: find.byType(ClipRRect),
+        of: find.byType(ClipRSuperellipse),
         matching: find.text('Outside title'),
       ),
       findsNothing,
     );
     expect(
       tester.getRect(find.text('Outside title')).top -
-          tester.getRect(find.byType(ClipRRect)).bottom,
+          tester.getRect(find.byType(ClipRSuperellipse)).bottom,
       closeTo(8, 0.5),
     );
     expect(posterCellAspect(184, wide: true), lessThan(16 / 9));
@@ -405,7 +405,7 @@ void main() {
     expect(find.text('Portrait title'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.byType(ClipRRect),
+        of: find.byType(ClipRSuperellipse),
         matching: find.text('Portrait title'),
       ),
       findsNothing,
@@ -433,7 +433,7 @@ void main() {
 
     expect(
       find.descendant(
-        of: find.byType(ClipRRect),
+        of: find.byType(ClipRSuperellipse),
         matching: find.text('Portrait title'),
       ),
       findsOneWidget,
@@ -463,7 +463,7 @@ void main() {
     expect(find.text('Actual movie title'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.byType(ClipRRect),
+        of: find.byType(ClipRSuperellipse),
         matching: find.text('Actual movie title'),
       ),
       findsOneWidget,
@@ -496,7 +496,7 @@ void main() {
     expect(find.text('Portrait TV title'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.byType(ClipRRect),
+        of: find.byType(ClipRSuperellipse),
         matching: find.text('Portrait TV title'),
       ),
       findsOneWidget,
@@ -536,7 +536,7 @@ void main() {
     expect(find.text('Actual rail title'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.byType(ClipRRect),
+        of: find.byType(ClipRSuperellipse),
         matching: find.text('Actual rail title'),
       ),
       findsOneWidget,

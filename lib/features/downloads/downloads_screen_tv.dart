@@ -75,9 +75,9 @@ class DownloadsScreenTv extends StatelessWidget {
                     itemBuilder: (context, i) {
                       final recs = groups[showIds[i]]!
                         ..sort(
-                          (a, b) =>
-                              (a.episodeNumber ?? 0)
-                                  .compareTo(b.episodeNumber ?? 0),
+                          (a, b) => (a.episodeNumber ?? 0).compareTo(
+                            b.episodeNumber ?? 0,
+                          ),
                         );
                       return _TvShowGroup(
                         records: recs,
@@ -141,6 +141,8 @@ class _TvShowGroup extends StatelessWidget {
                           imageUrl: head.cover!,
                           httpHeaders: head.coverHeaders,
                           fit: BoxFit.cover,
+                          // 44x62 thumb: decode small, not full poster.
+                          memCacheWidth: 132,
                           errorWidget: (c, u, e) =>
                               ColoredBox(color: AppColors.surface2),
                         )
@@ -241,11 +243,17 @@ class _TvShowGroup extends StatelessWidget {
                 semanticLabel: l10n.cancel,
                 onTap: () => Navigator.of(dctx).pop(),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 14,
+                  ),
                   child: Row(
                     children: [
-                      const Icon(Icons.close_rounded,
-                          color: AppColors.textPrimary, size: 22),
+                      const Icon(
+                        Icons.close_rounded,
+                        color: AppColors.textPrimary,
+                        size: 22,
+                      ),
                       const SizedBox(width: 16),
                       Text(l10n.cancel, style: AppText.headline),
                     ],
@@ -259,16 +267,23 @@ class _TvShowGroup extends StatelessWidget {
                   unawaited(manager.deleteAll(records));
                 },
                 child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 14,
+                  ),
                   child: Row(
                     children: [
-                      Icon(Icons.delete_outline_rounded,
-                          color: AppColors.accent, size: 22),
+                      Icon(
+                        Icons.delete_outline_rounded,
+                        color: AppColors.accent,
+                        size: 22,
+                      ),
                       const SizedBox(width: 16),
                       Text(
                         l10n.deleteAll,
-                        style: AppText.headline.copyWith(color: AppColors.accent),
+                        style: AppText.headline.copyWith(
+                          color: AppColors.accent,
+                        ),
                       ),
                     ],
                   ),
@@ -297,24 +312,45 @@ class _TvDownloadActions extends StatelessWidget {
     final r = record;
     final out = <(String, IconData, VoidCallback)>[];
     if (r.status == DownloadStatus.done) {
-      out.add((l10n.play, Icons.play_arrow_rounded,
-          () => launchDownloadedEpisode(context, r)));
+      out.add((
+        l10n.play,
+        Icons.play_arrow_rounded,
+        () => launchDownloadedEpisode(context, r),
+      ));
     }
     if (r.status == DownloadStatus.downloading) {
-      out.add((l10n.pause, Icons.pause_rounded, () => unawaited(manager.pause(r))));
+      out.add((
+        l10n.pause,
+        Icons.pause_rounded,
+        () => unawaited(manager.pause(r)),
+      ));
     }
     if (r.status == DownloadStatus.paused) {
-      out.add((l10n.resume, Icons.play_arrow_rounded,
-          () => unawaited(manager.resume(r))));
+      out.add((
+        l10n.resume,
+        Icons.play_arrow_rounded,
+        () => unawaited(manager.resume(r)),
+      ));
     }
     if (r.status == DownloadStatus.failed && !r.isTorrent) {
-      out.add((l10n.retry, Icons.refresh_rounded, () => unawaited(manager.retry(r))));
+      out.add((
+        l10n.retry,
+        Icons.refresh_rounded,
+        () => unawaited(manager.retry(r)),
+      ));
     }
     if (r.isActive) {
-      out.add((l10n.cancel, Icons.close_rounded, () => unawaited(manager.delete(r))));
+      out.add((
+        l10n.cancel,
+        Icons.close_rounded,
+        () => unawaited(manager.delete(r)),
+      ));
     }
-    out.add((l10n.delete, Icons.delete_outline_rounded,
-        () => unawaited(manager.delete(r))));
+    out.add((
+      l10n.delete,
+      Icons.delete_outline_rounded,
+      () => unawaited(manager.delete(r)),
+    ));
     return out;
   }
 
@@ -352,10 +388,17 @@ class _TvDownloadActions extends StatelessWidget {
                   actions[i].$3();
                 },
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 14,
+                  ),
                   child: Row(
                     children: [
-                      Icon(actions[i].$2, color: AppColors.textPrimary, size: 22),
+                      Icon(
+                        actions[i].$2,
+                        color: AppColors.textPrimary,
+                        size: 22,
+                      ),
                       const SizedBox(width: 16),
                       Text(actions[i].$1, style: AppText.headline),
                     ],
@@ -416,8 +459,11 @@ class _TvLocationHeaderState extends State<_TvLocationHeader> {
           ),
           child: Row(
             children: [
-              const Icon(Icons.folder_rounded,
-                  color: AppColors.textSecondary, size: 22),
+              const Icon(
+                Icons.folder_rounded,
+                color: AppColors.textSecondary,
+                size: 22,
+              ),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -425,16 +471,20 @@ class _TvLocationHeaderState extends State<_TvLocationHeader> {
                   children: [
                     Text(l10n.savingTo, style: AppText.caption),
                     const SizedBox(height: 2),
-                    Text(label,
-                        style: AppText.body,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis),
+                    Text(
+                      label,
+                      style: AppText.body,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ],
                 ),
               ),
               const SizedBox(width: 12),
-              Text(l10n.change,
-                  style: AppText.body.copyWith(color: AppColors.accent)),
+              Text(
+                l10n.change,
+                style: AppText.body.copyWith(color: AppColors.accent),
+              ),
             ],
           ),
         ),
@@ -482,13 +532,17 @@ class _TvLocationPickerState extends State<_TvLocationPicker> {
     final nav = Navigator.of(context);
     Uri? uri;
     try {
-      uri = await FileDownloader().uri.pickDirectory(persistedUriPermission: true);
+      uri = await FileDownloader().uri.pickDirectory(
+        persistedUriPermission: true,
+      );
     } catch (_) {
       uri = null; // no SAF picker on this TV — leave the current location
     }
     if (uri == null) return; // canceled or unavailable
-    await sl<DownloadPrefs>()
-        .setLocation(uri.toString(), folderLabelFromUri(uri));
+    await sl<DownloadPrefs>().setLocation(
+      uri.toString(),
+      folderLabelFromUri(uri),
+    );
     if (mounted) nav.pop();
   }
 
@@ -515,16 +569,20 @@ class _TvLocationPickerState extends State<_TvLocationPicker> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title,
-                      style: AppText.headline.copyWith(color: tint),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
+                  Text(
+                    title,
+                    style: AppText.headline.copyWith(color: tint),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   if (subtitle != null) ...[
                     const SizedBox(height: 2),
-                    Text(subtitle,
-                        style: AppText.caption,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis),
+                    Text(
+                      subtitle,
+                      style: AppText.caption,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ],
                 ],
               ),
@@ -548,31 +606,37 @@ class _TvLocationPickerState extends State<_TvLocationPicker> {
     // a real target. Detected drives first, then SAF custom, then reset.
     final rows = <Widget>[];
     for (final v in _volumes) {
-      rows.add(_row(
-        icon: v.removable
-            ? Icons.sd_storage_rounded
-            : Icons.smartphone_rounded,
-        title: v.label,
-        subtitle: v.removable ? l10n.removableDrive : l10n.onThisDevice,
-        autofocus: rows.isEmpty,
-        selected: current == v.path,
-        onTap: () => _select(v.path, v.label),
-      ));
+      rows.add(
+        _row(
+          icon: v.removable
+              ? Icons.sd_storage_rounded
+              : Icons.smartphone_rounded,
+          title: v.label,
+          subtitle: v.removable ? l10n.removableDrive : l10n.onThisDevice,
+          autofocus: rows.isEmpty,
+          selected: current == v.path,
+          onTap: () => _select(v.path, v.label),
+        ),
+      );
     }
-    rows.add(_row(
-      icon: Icons.folder_open_outlined,
-      title: l10n.chooseFolder,
-      subtitle: l10n.needsAFileManagerAppOnTheTV,
-      autofocus: rows.isEmpty,
-      onTap: _pickSaf,
-    ));
+    rows.add(
+      _row(
+        icon: Icons.folder_open_outlined,
+        title: l10n.chooseFolder,
+        subtitle: l10n.needsAFileManagerAppOnTheTV,
+        autofocus: rows.isEmpty,
+        onTap: _pickSaf,
+      ),
+    );
     if (hasCustom) {
-      rows.add(_row(
-        icon: Icons.restore_rounded,
-        title: l10n.resetToDefault,
-        autofocus: false,
-        onTap: () => _select(null, null),
-      ));
+      rows.add(
+        _row(
+          icon: Icons.restore_rounded,
+          title: l10n.resetToDefault,
+          autofocus: false,
+          onTap: () => _select(null, null),
+        ),
+      );
     }
 
     return Dialog(
@@ -587,8 +651,10 @@ class _TvLocationPickerState extends State<_TvLocationPicker> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 20, 24, 6),
-              child: Text(l10n.downloadLocation,
-                  style: AppText.title.copyWith(color: AppColors.textPrimary)),
+              child: Text(
+                l10n.downloadLocation,
+                style: AppText.title.copyWith(color: AppColors.textPrimary),
+              ),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
@@ -616,5 +682,4 @@ class _TvLocationPickerState extends State<_TvLocationPicker> {
 Widget debugTvDownloadActions({
   required DownloadRecord record,
   required DownloadManager manager,
-}) =>
-    _TvDownloadActions(record: record, manager: manager);
+}) => _TvDownloadActions(record: record, manager: manager);

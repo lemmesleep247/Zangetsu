@@ -2783,6 +2783,16 @@ class AppLocalizationsPt extends AppLocalizations {
   String get navigationBarSubtitle => 'Quais abas aparecem e em que ordem';
 
   @override
+  String get navDockBehavior => 'Dock behavior';
+
+  @override
+  String get keepDockExpanded => 'Keep dock expanded';
+
+  @override
+  String get keepDockExpandedSubtitle =>
+      'Keep the labels visible while scrolling';
+
+  @override
   String connectedCount(int count) {
     return '$count conectados';
   }

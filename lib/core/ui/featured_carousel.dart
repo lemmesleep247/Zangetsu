@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/media_item.dart';
 import '../theme/app_colors.dart';
+import 'route_observer.dart';
 import 'featured_hero.dart';
 
 /// Hero height as a share of the screen, so the banner keeps the same
@@ -60,6 +61,7 @@ class FeaturedCarousel extends StatefulWidget {
     this.meta,
     this.style = HeroTransition.parallax,
     this.reading = false,
+    this.isActive = true,
   });
 
   final List<MediaItem> items;
@@ -80,11 +82,15 @@ class FeaturedCarousel extends StatefulWidget {
   /// unchanged.
   final bool reading;
 
+  /// Whether the carousel's tab is selected. Route visibility is tracked
+  /// separately so a pushed detail page also pauses auto-advance.
+  final bool isActive;
+
   @override
   State<FeaturedCarousel> createState() => _FeaturedCarouselState();
 }
 
-class _FeaturedCarouselState extends State<FeaturedCarousel> {
+class _FeaturedCarouselState extends State<FeaturedCarousel> with RouteAware {
   // A large base so the PageView can scroll forward "forever" without ever
   // hitting an edge. Picked as a multiple of any realistic item count.
   static const int _virtualBase = 100000;
@@ -93,8 +99,11 @@ class _FeaturedCarouselState extends State<FeaturedCarousel> {
   late List<MediaItem> _pages;
   int _index = 0; // virtual page index
   Timer? _timer;
+  PageRoute<dynamic>? _route;
+  bool _routeIsCurrent = true;
 
   int get _count => _pages.length;
+  bool get _shouldAutoAdvance => widget.isActive && _routeIsCurrent;
 
   /// Maps the virtual [_index] back to the real item slot.
   int get _realIndex => _count == 0 ? 0 : _index % _count;
@@ -113,9 +122,55 @@ class _FeaturedCarouselState extends State<FeaturedCarousel> {
     _startTimer();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route == _route) return;
+
+    if (_route != null) appRouteObserver.unsubscribe(this);
+    if (route is PageRoute<dynamic>) {
+      _route = route;
+      _routeIsCurrent = route.isCurrent;
+      appRouteObserver.subscribe(this, route);
+    } else {
+      _route = null;
+      _routeIsCurrent = true;
+    }
+    _syncTimer();
+  }
+
+  @override
+  void didPush() => _setRouteCurrent(true);
+
+  @override
+  void didPopNext() => _setRouteCurrent(true);
+
+  @override
+  void didPushNext() => _setRouteCurrent(false);
+
+  @override
+  void didPop() => _setRouteCurrent(false);
+
+  void _setRouteCurrent(bool current) {
+    if (_routeIsCurrent == current) return;
+    _routeIsCurrent = current;
+    _syncTimer();
+  }
+
+  void _syncTimer() {
+    if (_shouldAutoAdvance) {
+      _startTimer();
+    } else {
+      _timer?.cancel();
+      _timer = null;
+    }
+  }
+
   void _startTimer() {
     _timer?.cancel();
-    if (_count > 1) {
+    _timer = null;
+    if (_shouldAutoAdvance && _count > 1) {
       _timer = Timer.periodic(const Duration(seconds: 5), (_) => _advance());
     }
   }
@@ -123,7 +178,7 @@ class _FeaturedCarouselState extends State<FeaturedCarousel> {
   /// Auto-advance — mode-aware. Cinematic bumps the index (cross-fade); parallax
   /// slides the PageView forward.
   void _advance() {
-    if (!mounted) return;
+    if (!mounted || !_shouldAutoAdvance) return;
     if (widget.style == HeroTransition.cinematic) {
       setState(() => _index++);
     } else if (_pc.hasClients) {
@@ -163,10 +218,12 @@ class _FeaturedCarouselState extends State<FeaturedCarousel> {
         });
       }
     }
+    if (old.isActive != widget.isActive) _syncTimer();
   }
 
   @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
     _timer?.cancel();
     _pc.dispose();
     super.dispose();

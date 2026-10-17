@@ -148,6 +148,8 @@ class _PersonPageState extends State<PersonPage> {
                   ? CachedNetworkImage(
                       imageUrl: p.photo!,
                       fit: BoxFit.cover,
+                      // 118x158 portrait: decode small, not full photo.
+                      memCacheWidth: 354,
                       placeholder: (_, _) =>
                           Container(color: AppColors.surface2),
                       errorWidget: (_, _, _) => const _PortraitFallback(),

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui' show ImageFilter;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -338,6 +337,9 @@ class _MyListViewState extends State<_MyListView> with WidgetsBindingObserver {
               };
         return Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          // Original fill, minus the live backdrop blur that repainted on
+          // every scroll frame. Same color, border, corners — and the
+          // original shadows back outside it.
           child: DecoratedBox(
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(26),
@@ -355,66 +357,60 @@ class _MyListViewState extends State<_MyListView> with WidgetsBindingObserver {
                 ),
               ],
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(26),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: AppColors.surface.withValues(alpha: 0.72),
-                    borderRadius: BorderRadius.circular(26),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.09),
-                      width: 0.5,
+            child: Container(
+              decoration: BoxDecoration(
+                color: AppColors.surface.withValues(alpha: 0.72),
+                borderRadius: BorderRadius.circular(26),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.09),
+                  width: 0.5,
+                ),
+              ),
+              padding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
+              child: Row(
+                children: [
+                  // The account this list belongs to, round and leading —
+                  // a tracker's own avatar, or yours on My List.
+                  _headerAvatar(context, pinned),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          // 19 overflowed the moment a handle was added
+                          // next to the tracker's name.
+                          style: AppText.title.copyWith(fontSize: 15.5),
+                        ),
+                        const SizedBox(height: 1),
+                        Text(
+                          subtitle,
+                          style: AppText.caption.copyWith(
+                            color: AppColors.textTertiary,
+                            fontSize: 11,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
                     ),
                   ),
-                  padding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
-                  child: Row(
-                    children: [
-                      // The account this list belongs to, round and leading —
-                      // a tracker's own avatar, or yours on My List.
-                      _headerAvatar(context, pinned),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              // 19 overflowed the moment a handle was added
-                              // next to the tracker's name.
-                              style: AppText.title.copyWith(fontSize: 15.5),
-                            ),
-                            const SizedBox(height: 1),
-                            Text(
-                              subtitle,
-                              style: AppText.caption.copyWith(
-                                color: AppColors.textTertiary,
-                                fontSize: 11,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      _pillIcon(
-                        _searching ? Icons.close_rounded : Icons.search_rounded,
-                        l10n.search2,
-                        _toggleSearch,
-                        active: _query.isNotEmpty,
-                      ),
-
-                      const SizedBox(width: 8),
-                      _libraryOptionsButton(context),
-                      const SizedBox(width: 8),
-                    ],
+                  const SizedBox(width: 8),
+                  _pillIcon(
+                    _searching ? Icons.close_rounded : Icons.search_rounded,
+                    l10n.search2,
+                    _toggleSearch,
+                    active: _query.isNotEmpty,
                   ),
-                ),
+
+                  const SizedBox(width: 8),
+                  _libraryOptionsButton(context),
+                  const SizedBox(width: 8),
+                ],
               ),
             ),
           ),
@@ -765,6 +761,8 @@ class _MyListViewState extends State<_MyListView> with WidgetsBindingObserver {
                 width: 30,
                 height: 30,
                 fit: BoxFit.cover,
+                // 30px avatar: decode small.
+                memCacheWidth: 90,
                 errorWidget: (_, _, _) => _miniLetter(letter),
               )
             : _miniLetter(letter),

@@ -256,6 +256,8 @@ class _GenreTile extends StatelessWidget {
               imageUrl: a.url,
               httpHeaders: a.headers,
               fit: BoxFit.cover,
+              // Tile is ~500px wide: decode at display size, not full source.
+              memCacheWidth: 540,
               // Neutral while loading, coloured only if it never arrives.
               // Showing the tint here meant a tile that HAS artwork flashed a
               // colour and then swapped, which reads as a glitch — grey says

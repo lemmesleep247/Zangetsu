@@ -35,6 +35,7 @@ class NavPrefs extends ChangeNotifier {
   static const String boxName = 'nav_prefs';
   static const String _tabsKey = 'tabs';
   static const String _startKey = 'start';
+  static const String _keepDockExpandedKey = 'keepDockExpanded';
 
   /// The dock is a fixed-width capsule that fits five icons; below three it
   /// looks empty and above five the labels start colliding.
@@ -109,14 +110,26 @@ class NavPrefs extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Whether the phone dock should keep its labels visible while scrolling.
+  /// This is opt-in so existing installs retain the current auto-collapse.
+  bool get keepDockExpanded => _box?.get(_keepDockExpandedKey) == true;
+
+  Future<void> setKeepDockExpanded(bool value) async {
+    await _box?.put(_keepDockExpandedKey, value);
+    notifyListeners();
+  }
+
   Future<void> reset() async {
     await _box?.delete(_tabsKey);
     await _box?.delete(_startKey);
+    await _box?.delete(_keepDockExpandedKey);
     notifyListeners();
   }
 
   bool get isDefault =>
-      listEquals(tabs, defaultTabs) && startTab == defaultTabs.first;
+      listEquals(tabs, defaultTabs) &&
+      startTab == defaultTabs.first &&
+      !keepDockExpanded;
 
   /// The validation the getter and setter both apply, exposed so the
   /// invariants can be tested without opening a Hive box.

@@ -2760,6 +2760,16 @@ class AppLocalizationsAr extends AppLocalizations {
   String get navigationBarSubtitle => 'علامات التبويب المعروضة وترتيبها';
 
   @override
+  String get navDockBehavior => 'Dock behavior';
+
+  @override
+  String get keepDockExpanded => 'Keep dock expanded';
+
+  @override
+  String get keepDockExpandedSubtitle =>
+      'Keep the labels visible while scrolling';
+
+  @override
   String connectedCount(int count) {
     return '$count متصلة';
   }

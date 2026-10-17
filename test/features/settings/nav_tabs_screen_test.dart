@@ -19,6 +19,19 @@ import 'package:watch_app/core/ui/nav_prefs.dart';
 import 'package:watch_app/core/zmode/zmode_prefs.dart';
 import 'package:watch_app/features/settings/nav_tabs_screen.dart';
 
+class _MemoryNavPrefs extends NavPrefs {
+  bool _keepDockExpanded = false;
+
+  @override
+  bool get keepDockExpanded => _keepDockExpanded;
+
+  @override
+  Future<void> setKeepDockExpanded(bool value) async {
+    _keepDockExpanded = value;
+    notifyListeners();
+  }
+}
+
 void main() {
   late Directory dir;
   late NavPrefs navPrefs;
@@ -31,7 +44,7 @@ void main() {
     // On by default since the Settings toggle was removed; these tests cover
     // both paths, so start from off and let each one opt in.
     await ZModePrefs.setEnabled(false);
-    navPrefs = NavPrefs();
+    navPrefs = _MemoryNavPrefs();
 
     await sl.reset();
     sl.registerSingleton<NavPrefs>(navPrefs);
@@ -71,5 +84,21 @@ void main() {
 
     expect(notShownSearchRow(), findsNothing);
     expect(onBarSearchRow(), findsNothing);
+  });
+
+  testWidgets('Keep dock expanded is off by default and can be enabled', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: NavTabsScreen()));
+    await tester.pumpAndSettle();
+
+    final toggle = find.byKey(const ValueKey('keep-dock-expanded-switch'));
+    expect(toggle, findsOneWidget);
+    expect(tester.widget<Switch>(toggle).value, isFalse);
+
+    await tester.tap(find.text('Keep dock expanded'));
+    await tester.pump();
+
+    expect(tester.widget<Switch>(toggle).value, isTrue);
   });
 }

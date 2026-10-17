@@ -2768,6 +2768,16 @@ class AppLocalizationsDe extends AppLocalizations {
       'Welche Tabs angezeigt werden und in welcher Reihenfolge';
 
   @override
+  String get navDockBehavior => 'Dock behavior';
+
+  @override
+  String get keepDockExpanded => 'Keep dock expanded';
+
+  @override
+  String get keepDockExpandedSubtitle =>
+      'Keep the labels visible while scrolling';
+
+  @override
   String connectedCount(int count) {
     return '$count verbunden';
   }

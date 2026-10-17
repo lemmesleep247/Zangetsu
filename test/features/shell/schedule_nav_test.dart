@@ -7,6 +7,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:watch_app/core/ui/dock_visibility.dart';
+import 'package:watch_app/core/ui/frosted_surface.dart';
 import 'package:watch_app/core/appwrite/appwrite_service.dart';
 import 'package:watch_app/core/anilist/anilist_service.dart';
 import 'package:watch_app/core/announce/announcement.dart';
@@ -25,6 +26,7 @@ import 'package:watch_app/core/playback/playback_prefs.dart';
 import 'package:watch_app/core/playback/search_history.dart';
 import 'package:watch_app/core/playback/search_prefs.dart';
 import 'package:watch_app/core/playback/search_source_prefs.dart';
+import 'package:watch_app/core/profiles/profile_shell_scope.dart';
 import 'package:watch_app/core/profiles/viewer_profile.dart';
 import 'package:watch_app/features/profiles/viewer_profiles_screen.dart';
 import 'package:watch_app/core/provider/cloudstream_provider.dart';
@@ -456,6 +458,24 @@ void main() {
     expect(dockLabel('Sources'), findsOneWidget);
   });
 
+  testWidgets('profile launch gate hides the entire phone shell', (
+    tester,
+  ) async {
+    sl.registerSingleton<AppMode>(const AppMode(isTv: false));
+    await tester.pumpWidget(
+      wrap(const ProfileShellScope(deferContent: true, child: RootShell())),
+    );
+
+    expect(find.byType(Scaffold), findsNothing);
+    expect(find.byKey(const ValueKey('dockPill')), findsNothing);
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is ColoredBox && widget.color == AppColors.bg,
+      ),
+      findsOneWidget,
+    );
+  });
+
   // The dock collapses to icons on scroll (DockScrollCollapse). Two things a
   // purely visual change quietly broke, and would break again:
   testWidgets('every dock tab keeps a tappable box and a name', (tester) async {
@@ -463,9 +483,17 @@ void main() {
     await tester.pumpWidget(wrap(const RootShell()));
     await tester.pumpAndSettle();
 
-    // Scope to the dock — it is the only blurred pill in the tree.
-    final dock = find.byType(BackdropFilter);
+    // The dock keeps one clipped live blur behind its static frost surface.
+    final dock = find.byKey(const ValueKey('dockPill'));
     expect(dock, findsOneWidget);
+    final dockSurface = tester.widget<FakeFrost>(dock);
+    expect(dockSurface.opacity, 0.55);
+    expect(dockSurface.blur, isTrue);
+    expect(dockSurface.blurSigma, 14);
+    expect(
+      find.descendant(of: dock, matching: find.byType(BackdropFilter)),
+      findsOneWidget,
+    );
 
     // A box worth aiming at — checked COLLAPSED, which is the state that
     // regressed. Open, the item is 44 on its own (icon + label) and proves

@@ -230,6 +230,8 @@ class _TvGenreTile extends StatelessWidget {
                 imageUrl: a.url,
                 httpHeaders: a.headers,
                 fit: BoxFit.cover,
+                // Same display-size decode as the phone tile.
+                memCacheWidth: 540,
                 placeholder: (_, _) => ColoredBox(color: AppColors.surface2),
                 errorWidget: (_, _, _) => ColoredBox(color: genreTint(genre)),
               )

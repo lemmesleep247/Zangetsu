@@ -41,6 +41,7 @@ class _NavTabsScreenState extends State<NavTabsScreen> {
   bool get _canAdd => _shown.length < NavPrefs.maxTabs;
 
   late DockTab _start = _prefs.startTab;
+  late bool _keepDockExpanded = _prefs.keepDockExpanded;
 
   /// The centre button is drawn from a real [DockTab]'s slot count, so it has
   /// to be mirrored here too: it is always on the bar and never editable.
@@ -51,6 +52,15 @@ class _NavTabsScreenState extends State<NavTabsScreen> {
   Future<void> _setStart(DockTab t) async {
     setState(() => _start = t);
     await _prefs.setStartTab(t);
+  }
+
+  Future<void> _setKeepDockExpanded(bool value) async {
+    setState(() => _keepDockExpanded = value);
+    await _prefs.setKeepDockExpanded(value);
+    if (mounted) {
+      // The app-bar Reset action reads the persisted preference too.
+      setState(() => _keepDockExpanded = _prefs.keepDockExpanded);
+    }
   }
 
   void _remove(DockTab t) {
@@ -87,6 +97,7 @@ class _NavTabsScreenState extends State<NavTabsScreen> {
     setState(() {
       _shown = List.of(_prefs.tabs);
       _start = _prefs.startTab;
+      _keepDockExpanded = _prefs.keepDockExpanded;
     });
   }
 
@@ -138,6 +149,23 @@ class _NavTabsScreenState extends State<NavTabsScreen> {
               // Listed but not editable: it explains the sixth icon in the
               // preview, which otherwise looks like the count is wrong.
               if (_hasSwitcher) _switcherRow(),
+            ],
+          ),
+          SettingsSectionLabel(l10n.navDockBehavior),
+          SettingsCard(
+            children: [
+              SettingsTile(
+                icon: Icons.unfold_more_rounded,
+                title: l10n.keepDockExpanded,
+                subtitle: l10n.keepDockExpandedSubtitle,
+                onTap: () => _setKeepDockExpanded(!_keepDockExpanded),
+                trailing: Switch.adaptive(
+                  key: const ValueKey('keep-dock-expanded-switch'),
+                  value: _keepDockExpanded,
+                  activeThumbColor: AppColors.accent,
+                  onChanged: _setKeepDockExpanded,
+                ),
+              ),
             ],
           ),
           SettingsSectionLabel(l10n.navTabsOpensOn),
