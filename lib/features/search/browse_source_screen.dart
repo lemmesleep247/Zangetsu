@@ -50,10 +50,8 @@ const Duration kLinkingIndicatorDelay = Duration(milliseconds: 350);
 /// The catalogue title behind a source's own [item], with that source pinned
 /// for it, or null to open [item] exactly as before.
 ///
-/// Top-level so the decision can be tested without navigating: the pin, the
-/// timeout and every fallback live here, and the screen only adds a progress
-/// bar.
-@visibleForTesting
+/// Shared by the source browser and Home's source catalogue so both open the
+/// same title identity. The pin, timeout, and fallback live here.
 Future<MediaItem?> canonicalTargetFor(MediaItem item) async {
   if (!ZModePrefs.enabled || !sl.isRegistered<MetadataRepository>()) {
     return null;

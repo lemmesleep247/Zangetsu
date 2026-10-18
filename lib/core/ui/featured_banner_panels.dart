@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 
 import '../models/media_item.dart';
@@ -66,11 +67,7 @@ class _FeaturedBannerPanelsState extends State<FeaturedBannerPanels> {
   void didUpdateWidget(FeaturedBannerPanels old) {
     super.didUpdateWidget(old);
     final next = widget.items.take(6).toList();
-    final changed =
-        next.length != _pages.length ||
-        (next.isNotEmpty &&
-            _pages.isNotEmpty &&
-            next.first.id != _pages.first.id);
+    final changed = !listEquals(next, _pages);
     if (changed) {
       setState(() {
         _pages = next;

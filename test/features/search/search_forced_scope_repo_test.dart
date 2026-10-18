@@ -47,7 +47,8 @@ class _FakeSourceRepo implements SourceRepository {
   @override
   String get sourceId => 'fake-source';
   @override
-  String displayName(String id) => 'Real Source';
+  String displayName(String id) =>
+      id == 'source:selected' ? 'Selected Source' : 'Real Source';
   @override
   bool hasSource(String id) => true;
   @override
@@ -147,4 +148,27 @@ void main() {
       expect(find.text('AniList'), findsNothing);
     },
   );
+
+  testWidgets('fixed Home source forces source search with Z Mode on', (
+    t,
+  ) async {
+    await t.runAsync(() async {
+      await ZModePrefs.init();
+      await ZModePrefs.setEnabled(true);
+    });
+
+    await t.pumpWidget(
+      MaterialApp(
+        home: BlocProvider<ActiveSourceCubit>.value(
+          value: sl<ActiveSourceCubit>(),
+          child: const SearchScreen(fixedSourceId: 'source:selected'),
+        ),
+      ),
+    );
+    await t.pumpAndSettle();
+
+    expect(find.text('Selected Source'), findsOneWidget);
+    expect(find.text('Real Source'), findsNothing);
+    expect(find.text('AniList'), findsNothing);
+  });
 }

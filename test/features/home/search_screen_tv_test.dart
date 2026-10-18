@@ -140,6 +140,8 @@ Widget _buildUnderTest(
   SearchHistory? history,
   SearchScope scope = SearchScope.sources,
   String? initialQuery,
+  String? fixedSourceId,
+  String? fixedSourceName,
 }) => BlocProvider<SearchBloc>.value(
   value: bloc,
   child: MaterialApp(
@@ -147,6 +149,8 @@ Widget _buildUnderTest(
       history: history,
       scope: scope,
       initialQuery: initialQuery,
+      fixedSourceId: fixedSourceId,
+      fixedSourceName: fixedSourceName,
     ),
   ),
 );
@@ -288,6 +292,26 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const ValueKey('tv-search-clear-history')), findsNothing);
+  });
+
+  testWidgets('fixed Home source replaces all/current source controls', (
+    tester,
+  ) async {
+    final bloc = _FakeSearchBloc(SearchState(status: SearchStatus.idle));
+    addTearDown(bloc.close);
+
+    await tester.pumpWidget(
+      _buildUnderTest(
+        bloc,
+        fixedSourceId: 'cs:selected',
+        fixedSourceName: 'Selected Source',
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Searching Selected Source'), findsOneWidget);
+    expect(find.byKey(const ValueKey('tv-search-scope-all')), findsNothing);
+    expect(find.byKey(const ValueKey('tv-search-scope-current')), findsNothing);
   });
 
   testWidgets(
@@ -519,10 +543,10 @@ void main() {
 
     expect(find.text('Attack on Titan'), findsOneWidget);
 
-      await tester.binding.handlePopRoute();
-      await tester.pump();
+    await tester.binding.handlePopRoute();
+    await tester.pump();
 
-      expect(bloc.state.query, isEmpty);
+    expect(bloc.state.query, isEmpty);
     expect(bloc.state.status, SearchStatus.idle);
     expect(find.text('Attack on Titan'), findsNothing);
     expect(find.text('Search for something to watch'), findsOneWidget);
@@ -562,9 +586,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(SearchScreenTv), findsOneWidget);
 
-      await tester.binding.handlePopRoute();
-      await tester.pumpAndSettle();
-      expect(find.byType(SearchScreenTv), findsNothing);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byType(SearchScreenTv), findsNothing);
     expect(find.text('open-search'), findsOneWidget);
   });
 }

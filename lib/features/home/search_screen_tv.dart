@@ -48,6 +48,8 @@ class SearchScreenTv extends StatefulWidget {
     this.history,
     required this.scope,
     this.forceMode,
+    this.fixedSourceId,
+    this.fixedSourceName,
   });
 
   final String? initialQuery;
@@ -61,6 +63,10 @@ class SearchScreenTv extends StatefulWidget {
 
   /// Tab-scoped source search from browse-sources; null on the main Search tab.
   final ContentMode? forceMode;
+
+  /// Pins this screen to Home's selected Source Catalogue source.
+  final String? fixedSourceId;
+  final String? fixedSourceName;
 
   @override
   State<SearchScreenTv> createState() => _SearchScreenTvState();
@@ -507,6 +513,16 @@ class _SearchScreenTvState extends State<SearchScreenTv> {
     );
   }
 
+  Widget _fixedSourceLabel() => Padding(
+    padding: const EdgeInsets.fromLTRB(48, 0, 48, 12),
+    child: Text(
+      '${context.l10n.searching} ${widget.fixedSourceName ?? widget.fixedSourceId}',
+      style: AppText.body.copyWith(color: AppColors.accent),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final hint = searchHintForScope(context, widget.scope);
@@ -617,7 +633,12 @@ class _SearchScreenTvState extends State<SearchScreenTv> {
                       ],
                     ),
                   ),
-                  if (_isLibrary) _libraryControls() else _sourcesScopeChips(),
+                  if (_isLibrary)
+                    _libraryControls()
+                  else if (widget.fixedSourceId != null)
+                    _fixedSourceLabel()
+                  else
+                    _sourcesScopeChips(),
                   // ── Results / states ──────────────────────────────────────────────
                   Expanded(
                     child: BlocBuilder<SearchBloc, SearchState>(

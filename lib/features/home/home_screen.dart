@@ -69,6 +69,9 @@ import '../../core/ui/featured_carousel.dart';
 import '../../core/ui/featured_hero.dart';
 import '../../core/metadata/title_logo_service.dart';
 import 'metadata_switch_sheet.dart';
+import 'home_banner_header.dart';
+import 'home_catalogue_prefs.dart';
+import 'source_catalogue_home_content.dart';
 import '../../core/ui/list_status_sheet.dart';
 import '../../core/ui/media_info_sheet.dart';
 import '../../core/ui/poster_card.dart';
@@ -127,12 +130,19 @@ class _HomeViewState extends State<_HomeView>
     with SingleTickerProviderStateMixin {
   final _repo = sl<CatalogueRepository>();
   final _myList = sl<MyListStore>();
+  final _sourceCatalogueController = SourceCatalogueHomeController();
+  StreamSubscription<ContentMode>? _sourceCatalogueModeSubscription;
+  late final ValueNotifier<bool> _sourceCatalogueSelection;
+  String? _sourceCatalogueSourceId = HomeCataloguePrefs.sourceId;
+  List<HomeSection> _sourceCatalogueSections = const [];
+  bool _sourceCatalogueSelected = HomeCataloguePrefs.sourceSelected;
 
   /// Hero metadata cache: key = "sourceId:id". Futures are stored so they're
   /// never re-fetched on carousel rotation; pre-warmed when hero items load.
   final Map<String, Future<HeroMeta?>> _metaCache = {};
   bool _heroPrewarmed = false;
   bool _resumePrewarmed = false;
+  bool _openingSourceCatalogueItem = false;
 
   // ── Logo-strike mode transition ──────────────────────────────────────────
   // Tapping a mode card runs a full-screen overlay: the Zangetsu mark springs
@@ -151,6 +161,15 @@ class _HomeViewState extends State<_HomeView>
   @override
   void initState() {
     super.initState();
+    _sourceCatalogueSelection = HomeCataloguePrefs.sourceSelection;
+    _sourceCatalogueSelection.addListener(_onSourceCatalogueSelectionChanged);
+    _sourceCatalogueModeSubscription = sl<ContentModeCubit>().stream.listen((
+      _,
+    ) {
+      if (mounted && _sourceCatalogueSelected) {
+        setState(() => _sourceCatalogueSections = const []);
+      }
+    });
     // Swap the content mode at the slash's peak (hidden behind the scrim), then
     // tear the overlay down once it finishes.
     _slashCtrl =
@@ -203,8 +222,58 @@ class _HomeViewState extends State<_HomeView>
 
   @override
   void dispose() {
+    _sourceCatalogueModeSubscription?.cancel();
+    _sourceCatalogueSelection.removeListener(
+      _onSourceCatalogueSelectionChanged,
+    );
     _slashCtrl.dispose();
     super.dispose();
+  }
+
+  void _onSourceCatalogueSelectionChanged() {
+    final selected = _sourceCatalogueSelection.value;
+    if (!mounted || selected == _sourceCatalogueSelected) return;
+    setState(() {
+      _sourceCatalogueSelected = selected;
+      _sourceCatalogueSections = const [];
+      if (selected) {
+        _sourceCatalogueSourceId ??= sl<ActiveSourceCubit>().state;
+      }
+    });
+  }
+
+  Future<void> _openHomeCataloguePicker() async {
+    final selection = await showMetadataSwitchSheet(
+      context,
+      sourceCatalogueSelected: _sourceCatalogueSelected,
+    );
+    if (!mounted || selection == null) return;
+    final showSourceCatalogue = selection == HomeCatalogueSelection.source;
+    if (showSourceCatalogue == _sourceCatalogueSelected) return;
+    await HomeCataloguePrefs.setSourceSelected(showSourceCatalogue);
+  }
+
+  void _selectHomeCatalogueSource(String sourceId) {
+    if (sourceId == _sourceCatalogueSourceId) return;
+    setState(() {
+      _sourceCatalogueSourceId = sourceId;
+      _sourceCatalogueSections = const [];
+    });
+    unawaited(HomeCataloguePrefs.setSourceId(sourceId));
+  }
+
+  void _setSourceCatalogueSections(List<HomeSection> sections) {
+    if (!mounted || !_sourceCatalogueSelected) return;
+    setState(() => _sourceCatalogueSections = sections);
+  }
+
+  List<MediaItem> get _sourceCatalogueHeroItems {
+    final sections = _sourceCatalogueSections;
+    if (sections.isEmpty) return const [];
+    for (final section in sections) {
+      if (section.title.startsWith('Trending')) return section.items;
+    }
+    return sections.first.items;
   }
 
   /// Best-effort, non-blocking check for CloudStream source updates on launch.
@@ -367,6 +436,28 @@ class _HomeViewState extends State<_HomeView>
       // Refresh Continue Watching + My List row when returning from detail.
       if (mounted) setState(() {});
     });
+  }
+
+  Future<void> _withSourceCatalogueItem(
+    MediaItem item,
+    FutureOr<void> Function(MediaItem) action,
+  ) async {
+    if (_openingSourceCatalogueItem) return;
+    _openingSourceCatalogueItem = true;
+    try {
+      final target = await sourceCatalogueTargetFor(item);
+      if (mounted) await action(target);
+    } finally {
+      _openingSourceCatalogueItem = false;
+    }
+  }
+
+  void _openSourceCatalogueDetail(MediaItem item) {
+    unawaited(_withSourceCatalogueItem(item, _openDetail));
+  }
+
+  void _showSourceCatalogueInfo(MediaItem item) {
+    unawaited(_withSourceCatalogueItem(item, _showInfo));
   }
 
   String _typeLabel(ProviderType t) =>
@@ -649,6 +740,16 @@ class _HomeViewState extends State<_HomeView>
 
   /// Floating brand header — always positioned on top of the hero or bg.
   Widget _buildHeader({bool edgeBanner = false}) {
+    Widget sourceSwitcher() {
+      if (!_sourceCatalogueSelected) return const HomeSourceSwitcherSlot();
+      final sourceId = _sourceCatalogueSourceId;
+      if (sourceId == null) return const SizedBox.shrink();
+      return SourceSwitcher(
+        currentId: sourceId,
+        onChanged: _selectHomeCatalogueSource,
+      );
+    }
+
     return SafeArea(
       bottom: false,
       child: LayoutBuilder(
@@ -657,7 +758,7 @@ class _HomeViewState extends State<_HomeView>
           final brand = edgeBanner
               ? IconButton(
                   tooltip: 'Zangetsu',
-                  onPressed: () => showMetadataSwitchSheet(context),
+                  onPressed: () => _openHomeCataloguePicker(),
                   icon: Image.asset(
                     'assets/icon/logo_mark.png',
                     width: 36,
@@ -667,7 +768,7 @@ class _HomeViewState extends State<_HomeView>
                 )
               : GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => showMetadataSwitchSheet(context),
+                  onTap: () => _openHomeCataloguePicker(),
                   child: Padding(
                     // Only the padding is new: 22px of artwork is under the
                     // 48px minimum tap target, and vertical padding alone
@@ -683,7 +784,12 @@ class _HomeViewState extends State<_HomeView>
           final actions = [
             _headerDownloadButton(edgeBanner: edgeBanner),
             _notificationBell(context, edgeBanner: edgeBanner),
-            HomeSearchAction(edgeBanner: edgeBanner),
+            HomeSearchAction(
+              edgeBanner: edgeBanner,
+              fixedSourceId: _sourceCatalogueSelected
+                  ? _sourceCatalogueSourceId
+                  : null,
+            ),
           ];
 
           return Padding(
@@ -697,7 +803,8 @@ class _HomeViewState extends State<_HomeView>
                       ValueListenableBuilder<int>(
                         valueListenable: ZModePrefs.revision,
                         builder: (context, _, _) {
-                          final showSource = !ZModePrefs.enabled;
+                          final showSource =
+                              _sourceCatalogueSelected || !ZModePrefs.enabled;
                           return ValueListenableBuilder<bool>(
                             valueListenable: IncognitoMode.notifier,
                             builder: (context, incognito, _) {
@@ -712,8 +819,7 @@ class _HomeViewState extends State<_HomeView>
                                   runSpacing: 4,
                                   children: [
                                     if (incognito) const _IncognitoChip(),
-                                    if (showSource)
-                                      const HomeSourceSwitcherSlot(),
+                                    if (showSource) sourceSwitcher(),
                                   ],
                                 ),
                               );
@@ -733,7 +839,7 @@ class _HomeViewState extends State<_HomeView>
                       ),
                       const _IncognitoChip(),
                       ...actions,
-                      const HomeSourceSwitcherSlot(),
+                      sourceSwitcher(),
                     ],
                   ),
           );
@@ -751,13 +857,31 @@ class _HomeViewState extends State<_HomeView>
   /// runs unless someone opts in.
   Widget _featuredBanner(String bannerId, List<MediaItem> heroItems) {
     final reading = sl<ContentModeCubit>().state.isReading;
-    void toggleList(MediaItem m) => showListStatusSheet(
-      context,
-      item: m,
-      onChanged: () {
-        if (mounted) setState(() {});
-      },
-    );
+    void toggleList(MediaItem m) {
+      Future<void> showSheet(MediaItem target) => showListStatusSheet(
+        context,
+        item: target,
+        onChanged: () {
+          if (mounted) setState(() {});
+        },
+      );
+      if (_sourceCatalogueSelected) {
+        unawaited(_withSourceCatalogueItem(m, showSheet));
+      } else {
+        unawaited(showSheet(m));
+      }
+    }
+
+    void onInfo(MediaItem m) => _sourceCatalogueSelected
+        ? _openSourceCatalogueDetail(m)
+        : _openDetail(m);
+    void onPlay(MediaItem m) {
+      if (_sourceCatalogueSelected) {
+        unawaited(_withSourceCatalogueItem(m, _playFeatured));
+      } else {
+        unawaited(_playFeatured(m));
+      }
+    }
 
     switch (bannerId) {
       case BannerStyle.panelsId:
@@ -765,8 +889,8 @@ class _HomeViewState extends State<_HomeView>
           items: heroItems,
           reading: reading,
           inList: (m) => _myList.contains(m),
-          onPlay: _playFeatured,
-          onInfo: _openDetail,
+          onPlay: onPlay,
+          onInfo: onInfo,
           onToggleList: toggleList,
           meta: _heroMeta,
         );
@@ -774,7 +898,7 @@ class _HomeViewState extends State<_HomeView>
         return FeaturedBannerEdge(
           items: heroItems,
           reading: reading,
-          onInfo: _openDetail,
+          onInfo: onInfo,
           meta: _heroMeta,
         );
       default:
@@ -783,8 +907,8 @@ class _HomeViewState extends State<_HomeView>
           items: heroItems,
           reading: reading,
           inList: (m) => _myList.contains(m),
-          onPlay: _playFeatured,
-          onInfo: _openDetail,
+          onPlay: onPlay,
+          onInfo: onInfo,
           onToggleList: toggleList,
           meta: _heroMeta,
           style: HeroTransition.cinematic,
@@ -870,7 +994,7 @@ class _HomeViewState extends State<_HomeView>
 
   /// Builds one provider-defined browse row (poster cards). The section is
   /// already guaranteed non-empty by [SourceRepository.home].
-  Widget _sectionRow(HomeSection section) {
+  Widget _sectionRow(HomeSection section, {bool sourceCatalogue = false}) {
     final items = section.items;
     return _animated(
       ContentRow(
@@ -878,7 +1002,7 @@ class _HomeViewState extends State<_HomeView>
         itemWidth: posterRowWidth(context),
         itemHeight: posterRowHeight(context),
         itemCount: items.length,
-        onSeeAll: () => _openSeeAll(section),
+        onSeeAll: () => _openSeeAll(section, sourceCatalogue: sourceCatalogue),
         itemBuilder: (c, i) => PosterCard(
           title: items[i].title,
           logoItem: items[i],
@@ -891,8 +1015,12 @@ class _HomeViewState extends State<_HomeView>
           qualityBadge: items[i].quality,
           scoreBadge: items[i].score,
           dubBadge: items[i].dubBadge,
-          onTap: () => _openDetail(items[i]),
-          onLongPress: () => _showInfo(items[i]),
+          onTap: () => sourceCatalogue
+              ? _openSourceCatalogueDetail(items[i])
+              : _openDetail(items[i]),
+          onLongPress: () => sourceCatalogue
+              ? _showSourceCatalogueInfo(items[i])
+              : _showInfo(items[i]),
         ),
       ),
     );
@@ -994,6 +1122,47 @@ class _HomeViewState extends State<_HomeView>
       ),
   };
 
+  List<Widget> _sourceCatalogueHomeSlivers(List<HomeRow> rows) {
+    final slivers = <Widget>[];
+    var insertedCatalogue = false;
+    void insertCatalogue() {
+      if (insertedCatalogue) return;
+      insertedCatalogue = true;
+      slivers.add(_sourceCatalogueHomeSliver());
+    }
+
+    for (final row in rows) {
+      // Only the selected source contributes catalogue rows. Keep the local
+      // Continue row, but do not mix AniList/MAL tracker rows into this view.
+      if (row is ProviderHomeRow || row is StreamingServicesHomeRow) {
+        insertCatalogue();
+      } else if (row is LocalContinueHomeRow) {
+        slivers.add(_homeRowSliver(row));
+      }
+    }
+    if (!insertedCatalogue) insertCatalogue();
+    return slivers;
+  }
+
+  Widget _sourceCatalogueHomeSliver() => SliverToBoxAdapter(
+    child: BlocBuilder<ContentModeCubit, ContentMode>(
+      bloc: sl<ContentModeCubit>(),
+      builder: (context, mode) => SourceCatalogueHomeContent(
+        controller: _sourceCatalogueController,
+        initialSourceId: _sourceCatalogueSourceId,
+        onSourceSelected: (sourceId) {
+          _sourceCatalogueSourceId = sourceId;
+          unawaited(HomeCataloguePrefs.setSourceId(sourceId));
+        },
+        onSectionsChanged: _setSourceCatalogueSections,
+        sectionBuilder: (section) =>
+            _sectionRow(section, sourceCatalogue: true),
+        showSourcePicker: false,
+        mode: mode,
+      ),
+    ),
+  );
+
   /// "See all" on New Episodes: the same entries as a grid, keeping the count
   /// badge so the reason each one is here survives the jump.
   ///
@@ -1086,15 +1255,15 @@ class _HomeViewState extends State<_HomeView>
   }
 
   /// Open the full-grid "See All" view of a browse row.
-  void _openSeeAll(HomeSection section) {
+  void _openSeeAll(HomeSection section, {bool sourceCatalogue = false}) {
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => SeeAllScreen(
           title: section.title,
           items: section.items,
-          onTap: _openDetail,
-          onLongPress: _showInfo,
+          onTap: sourceCatalogue ? _openSourceCatalogueDetail : _openDetail,
+          onLongPress: sourceCatalogue ? _showSourceCatalogueInfo : _showInfo,
           // Only paginable rows carry a `more` descriptor; everything else
           // stays a fixed list. Pagination isn't part of CatalogueRepository,
           // so go to whichever repository owns the row: the metadata providers
@@ -1757,6 +1926,9 @@ class _HomeViewState extends State<_HomeView>
                 if (sl.isRegistered<AuthCubit>()) {
                   unawaited(sl<AuthCubit>().revalidateIfFlagged(force: true));
                 }
+                if (_sourceCatalogueSelected) {
+                  return _sourceCatalogueController.refresh();
+                }
                 return context.read<HomeCubit>().load();
               },
               child: BlocBuilder<HomeCubit, HomeState>(
@@ -1788,7 +1960,8 @@ class _HomeViewState extends State<_HomeView>
                   // `mihon:`/`lnr:` source, so the active-source prefix check
                   // would wrongly call a fetch that just succeeded "no sources".
                   final activeId = context.read<ActiveSourceCubit>().state;
-                  final noSourceForMode = ZModePrefs.enabled
+                  final noSourceForMode =
+                      _sourceCatalogueSelected || ZModePrefs.enabled
                       ? false
                       : switch (sl<ContentModeCubit>().state) {
                           ContentMode.manga => !activeId.startsWith('mihon:'),
@@ -1801,38 +1974,19 @@ class _HomeViewState extends State<_HomeView>
                       SliverToBoxAdapter(
                         child: Builder(
                           builder: (context) {
-                            final heroItems = state.heroItems;
+                            final heroItems = _sourceCatalogueSelected
+                                ? _sourceCatalogueHeroItems
+                                : state.heroItems;
                             final hasHero = heroItems.isNotEmpty;
                             if (hasHero) _prewarmHeroMeta(heroItems);
 
-                            if (hasHero && !noSourceForMode) {
-                              // Which banner is drawn is a Settings choice, and
-                              // it can change while Home is already built — so
-                              // listen rather than read once.
-                              return ValueListenableBuilder<String>(
-                                valueListenable: BannerStyle.current,
-                                builder: (context, bannerId, _) => Stack(
-                                  children: [
-                                    _featuredBanner(bannerId, heroItems),
-                                    // Floating header sits on top
-                                    Positioned(
-                                      top: 0,
-                                      left: 0,
-                                      right: 0,
-                                      child: _buildHeader(
-                                        edgeBanner:
-                                            bannerId == BannerStyle.edgeId,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }
-
-                            // While loading or on error: plain header on bg colour.
-                            return ColoredBox(
-                              color: AppColors.bg,
-                              child: _buildHeader(),
+                            return HomeBannerHeader(
+                              bannerStyle: BannerStyle.current,
+                              hasHero: hasHero && !noSourceForMode,
+                              bannerBuilder: (bannerId) =>
+                                  _featuredBanner(bannerId, heroItems),
+                              headerBuilder: (edgeBanner) =>
+                                  _buildHeader(edgeBanner: edgeBanner),
                             );
                           },
                         ),
@@ -1858,8 +2012,11 @@ class _HomeViewState extends State<_HomeView>
                       // ContinueSection keeps its old spot above the skeletons
                       // so the loading screen is exactly today's.
                       if (state.rows case final rows?)
-                        ...rows.map(_homeRowSliver)
-                      else
+                        if (_sourceCatalogueSelected)
+                          ..._sourceCatalogueHomeSlivers(rows)
+                        else
+                          ...rows.map(_homeRowSliver)
+                      else ...[
                         ContinueSection(
                           onResume: _resume,
                           onLongPress: _showContinueInfo,
@@ -1867,17 +2024,23 @@ class _HomeViewState extends State<_HomeView>
                           onResumeReading: _resumeReading,
                           onLongPressReading: _showContinueReadingInfo,
                         ),
+                        if (_sourceCatalogueSelected)
+                          _sourceCatalogueHomeSliver(),
+                      ],
 
                       // ── Skeletons while the first load runs / empty states ───
                       // The provider rows themselves are part of state.rows
                       // above; this branch only owns the loading placeholders
                       // and the "nothing came back" views.
-                      if (showSkeletons && !noSourceForMode)
+                      if (!_sourceCatalogueSelected &&
+                          showSkeletons &&
+                          !noSourceForMode)
                         ...List.generate(
                           3,
                           (_) => const SliverToBoxAdapter(child: RowSkeleton()),
                         )
-                      else if (noSourceForMode || loadedEmpty)
+                      else if (!_sourceCatalogueSelected &&
+                          (noSourceForMode || loadedEmpty))
                         SliverFillRemaining(
                           hasScrollBody: false,
                           child: HomeLoadedEmptyView(
@@ -1945,13 +2108,17 @@ class _HomeViewState extends State<_HomeView>
 }
 
 /// Opens [SearchScreen] — the primary way into search now that it's off the
-/// dock. Shown regardless of Z Mode: [SearchScreen] itself already switches
-/// between the metadata catalogue and the active source, so the header icon
-/// that reaches it doesn't need to.
+/// dock. Normally Search follows Z Mode; Home passes [fixedSourceId] when its
+/// Source Catalogue is selected so the query stays on that source.
 class HomeSearchAction extends StatelessWidget {
-  const HomeSearchAction({super.key, this.edgeBanner = false});
+  const HomeSearchAction({
+    super.key,
+    this.edgeBanner = false,
+    this.fixedSourceId,
+  });
 
   final bool edgeBanner;
+  final String? fixedSourceId;
 
   @override
   Widget build(BuildContext context) {
@@ -1963,9 +2130,11 @@ class HomeSearchAction extends StatelessWidget {
       ),
       tooltip: context.l10n.search,
       style: edgeBanner ? _edgeHeaderButtonStyle() : null,
-      onPressed: () => Navigator.of(
-        context,
-      ).push(MaterialPageRoute<void>(builder: (_) => const SearchScreen())),
+      onPressed: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => SearchScreen(fixedSourceId: fixedSourceId),
+        ),
+      ),
     );
   }
 }

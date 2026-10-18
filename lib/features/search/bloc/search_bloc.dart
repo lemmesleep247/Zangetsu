@@ -27,11 +27,16 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
     SearchPrefs? prefs,
     TitleSuggestionService? suggestions,
     this.forceMode,
+    this.fixedSourceId,
   }) : _repo = repo,
        _history = history,
        _prefs = prefs ?? sl<SearchPrefs>(),
        _suggestions = suggestions ?? sl<TitleSuggestionService>(),
-       super(_restoredState(prefs ?? sl<SearchPrefs>())) {
+       super(
+         _restoredState(
+           prefs ?? sl<SearchPrefs>(),
+         ).copyWith(currentSourceOnly: fixedSourceId == null ? null : true),
+       ) {
     on<SearchStarted>(_onStarted);
     on<SearchQueryChanged>(_onQueryChanged);
     on<SearchSuggestionsUpdated>(_onSuggestionsUpdated);
@@ -82,6 +87,10 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
   /// whatever the app's global content mode happens to be. Null keeps
   /// today's behaviour byte-identical.
   final ContentMode? forceMode;
+
+  /// Pins a Home Source Catalogue search to its selected source without
+  /// changing the app-wide active source or saved search scope.
+  final String? fixedSourceId;
 
   /// Hard cap on one source's search.
   ///
@@ -189,7 +198,7 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
   ) async {
     if (state.trending.isNotEmpty) return;
     try {
-      final sections = await _repo.home();
+      final sections = await _repo.home(sourceId: fixedSourceId);
       final items = sections.isNotEmpty
           ? sections.first.items.take(12).toList()
           : <MediaItem>[];
@@ -265,6 +274,7 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
     SearchScopeChanged event,
     Emitter<SearchState> emit,
   ) async {
+    if (fixedSourceId != null) return;
     if (event.currentSourceOnly == state.currentSourceOnly) return;
     // Reset the per-source chip — it's meaningless in current-source mode and
     // stale when switching back to all-sources.
@@ -406,7 +416,9 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
     // all-sources mode it's every loaded source EXCEPT the ones the user
     // switched off for search (search-only — doesn't affect Home use).
     List<({String id, String name})> sources;
-    if (state.currentSourceOnly) {
+    if (fixedSourceId case final id?) {
+      sources = _repo.loadedSources.where((source) => source.id == id).toList();
+    } else if (state.currentSourceOnly) {
       final activeId = sl<ActiveSourceCubit>().state;
       sources = [(id: activeId, name: _repo.displayName(activeId))];
     } else {

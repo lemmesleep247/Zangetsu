@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 
 import '../models/media_item.dart';
@@ -195,11 +196,10 @@ class _FeaturedCarouselState extends State<FeaturedCarousel> with RouteAware {
     // The items change when the user switches source — rebuild the pages so the
     // banner reflects the new catalog (it used to cache the first source's items).
     final next = widget.items.take(6).toList();
-    final changed =
-        next.length != _pages.length ||
-        (next.isNotEmpty &&
-            _pages.isNotEmpty &&
-            next.first.id != _pages.first.id);
+    // Comparing only length + first id misses sources that share a leading
+    // title but return different later titles, leaving old-source slides in the
+    // carousel until it rotates past them.
+    final changed = !listEquals(next, _pages);
     if (changed) {
       setState(() {
         _pages = next;

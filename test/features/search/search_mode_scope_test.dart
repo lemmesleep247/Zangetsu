@@ -106,7 +106,11 @@ class _FakeSourceHealthStore extends SourceHealthStore {
   @override
   bool isSkippable(String id) => false;
   @override
-  Future<void> record(String id, SourceOutcome outcome, {int? responseMs}) async {}
+  Future<void> record(
+    String id,
+    SourceOutcome outcome, {
+    int? responseMs,
+  }) async {}
 }
 
 /// Fake repository: `implements` (NOT `extends`) so the SourceRepository
@@ -129,6 +133,7 @@ class _FakeRepo implements SourceRepository {
 
   /// Every sourceId `searchStatus` was actually called with.
   final List<String> searchedSourceIds = [];
+  final List<String?> homeSourceIds = [];
 
   @override
   Future<({List<MediaItem> items, SourceOutcome outcome})> searchStatus(
@@ -178,8 +183,13 @@ class _FakeRepo implements SourceRepository {
   }) => throw UnimplementedError();
 
   @override
-  Future<List<HomeSection>> home({String category = 'sub', String? sourceId}) =>
-      throw UnimplementedError();
+  Future<List<HomeSection>> home({
+    String category = 'sub',
+    String? sourceId,
+  }) async {
+    homeSourceIds.add(sourceId);
+    return const [];
+  }
 
   @override
   Future<List<MediaItem>> search(
@@ -295,6 +305,44 @@ void main() {
   });
 
   group('SearchBloc mode-scoped all-sources search', () {
+    test('a Home-fixed source searches only that source', () async {
+      await modeCubit.setMode(ContentMode.anime);
+      repo.loadedSourcesSeed = const [
+        (id: 'ani:1', name: 'First anime source'),
+        (id: 'ani:2', name: 'Selected Home source'),
+        (id: 'mihon:1', name: 'Manga source'),
+      ];
+      final fixed = SearchBloc(
+        repo: repo,
+        history: _FakeSearchHistory(),
+        prefs: _FakeSearchPrefs(),
+        suggestions: _FakeSuggestions(),
+        fixedSourceId: 'ani:2',
+      );
+      addTearDown(fixed.close);
+
+      fixed.add(const SearchRunRequested('naruto'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(repo.searchedSourceIds, ['ani:2']);
+    });
+
+    test('fixed-source idle picks also load from that source', () async {
+      final fixed = SearchBloc(
+        repo: repo,
+        history: _FakeSearchHistory(),
+        prefs: _FakeSearchPrefs(),
+        suggestions: _FakeSuggestions(),
+        fixedSourceId: 'ani:2',
+      );
+      addTearDown(fixed.close);
+
+      fixed.add(const SearchStarted());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(repo.homeSourceIds, ['ani:2']);
+    });
+
     test(
       'manga mode: all-sources search does not query anime sources',
       () async {
@@ -319,31 +367,28 @@ void main() {
       },
     );
 
-    test(
-      'anime mode: manga and novel sources are not searched',
-      () async {
-        // Anime is already the restored default, but set it explicitly so
-        // this test never depends on run order or a leftover Hive value.
-        await modeCubit.setMode(ContentMode.anime);
+    test('anime mode: manga and novel sources are not searched', () async {
+      // Anime is already the restored default, but set it explicitly so
+      // this test never depends on run order or a leftover Hive value.
+      await modeCubit.setMode(ContentMode.anime);
 
-        bloc.add(const SearchRunRequested('naruto'));
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+      bloc.add(const SearchRunRequested('naruto'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
 
-        // This assertion used to be inverted — it required anime mode to
-        // search EVERY source, manga ones included, on the theory that any
-        // narrowing would drop streaming sources. It doesn't: anime accepts
-        // both anime and movie providers, and cs:/ani:/untyped ids all type as
-        // anime, so the only thing filtering removes is exactly the manga and
-        // novel sources that were leaking into anime results.
-        expect(
-          repo.searchedSourceIds.toSet(),
-          {'ani:1'},
-          reason:
-              'anime mode must search video sources only — a mihon: source '
-              'here is the manga/novel leak this test now guards against',
-        );
-      },
-    );
+      // This assertion used to be inverted — it required anime mode to
+      // search EVERY source, manga ones included, on the theory that any
+      // narrowing would drop streaming sources. It doesn't: anime accepts
+      // both anime and movie providers, and cs:/ani:/untyped ids all type as
+      // anime, so the only thing filtering removes is exactly the manga and
+      // novel sources that were leaking into anime results.
+      expect(
+        repo.searchedSourceIds.toSet(),
+        {'ani:1'},
+        reason:
+            'anime mode must search video sources only — a mihon: source '
+            'here is the manga/novel leak this test now guards against',
+      );
+    });
   });
 
   group('SearchBloc.forceMode (search opened from a specific tab)', () {

@@ -48,12 +48,15 @@ void main() {
     } catch (_) {}
   });
 
-  Future<_RecordingNavigatorObserver> pumpAction(WidgetTester tester) async {
+  Future<_RecordingNavigatorObserver> pumpAction(
+    WidgetTester tester, {
+    String? fixedSourceId,
+  }) async {
     final observer = _RecordingNavigatorObserver();
     await tester.pumpWidget(
       MaterialApp(
         navigatorObservers: [observer],
-        home: const Scaffold(body: HomeSearchAction()),
+        home: Scaffold(body: HomeSearchAction(fixedSourceId: fixedSourceId)),
       ),
     );
     return observer;
@@ -62,7 +65,12 @@ void main() {
   testWidgets('Z Mode off: the search icon shows', (tester) async {
     expect(ZModePrefs.enabled, isFalse);
     await pumpAction(tester);
-    expect(find.byWidgetPredicate((w) => w is DockIcon && w.glyph == DockGlyph.search), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is DockIcon && w.glyph == DockGlyph.search,
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('Z Mode on: the search icon still shows', (tester) async {
@@ -70,7 +78,12 @@ void main() {
     // binding without runAsync — same gotcha as home_browse_sources_action's.
     await tester.runAsync(() => ZModePrefs.setEnabled(true));
     await pumpAction(tester);
-    expect(find.byWidgetPredicate((w) => w is DockIcon && w.glyph == DockGlyph.search), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is DockIcon && w.glyph == DockGlyph.search,
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('tapping it pushes SearchScreen', (tester) async {
@@ -79,7 +92,11 @@ void main() {
     final before = observer.pushed.length;
 
     // No pump() after this tap on purpose — see _RecordingNavigatorObserver.
-    await tester.tap(find.byWidgetPredicate((w) => w is DockIcon && w.glyph == DockGlyph.search));
+    await tester.tap(
+      find.byWidgetPredicate(
+        (w) => w is DockIcon && w.glyph == DockGlyph.search,
+      ),
+    );
     expect(observer.pushed.length, before + 1);
 
     final pushedRoute = observer.pushed.last as MaterialPageRoute;
@@ -87,5 +104,24 @@ void main() {
       tester.element(find.byType(HomeSearchAction)),
     );
     expect(pushedWidget, isA<SearchScreen>());
+  });
+
+  testWidgets('passes the selected Home source to SearchScreen', (
+    tester,
+  ) async {
+    final observer = await pumpAction(tester, fixedSourceId: 'cs:selected');
+    final before = observer.pushed.length;
+
+    await tester.tap(
+      find.byWidgetPredicate(
+        (w) => w is DockIcon && w.glyph == DockGlyph.search,
+      ),
+    );
+
+    final pushedRoute = observer.pushed[before] as MaterialPageRoute;
+    final pushedWidget =
+        pushedRoute.builder(tester.element(find.byType(HomeSearchAction)))
+            as SearchScreen;
+    expect(pushedWidget.fixedSourceId, 'cs:selected');
   });
 }

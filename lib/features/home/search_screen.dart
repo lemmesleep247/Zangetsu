@@ -84,6 +84,7 @@ class SearchScreen extends StatefulWidget {
     this.focusSignal,
     this.forceSources = false,
     this.forceMode,
+    this.fixedSourceId,
     this.initialFilters,
   });
 
@@ -114,6 +115,10 @@ class SearchScreen extends StatefulWidget {
   /// leaves behaviour unchanged.
   final ContentMode? forceMode;
 
+  /// When set, Search stays on the selected Home Source Catalogue source and
+  /// does not offer a switch to all sources.
+  final String? fixedSourceId;
+
   /// Filters to open with, already applied. Set when this is pushed from a
   /// genre or tag chip on a detail page: the point of that tap is to land on
   /// the results, not on an empty filter sheet.
@@ -128,7 +133,10 @@ class _SearchScreenState extends State<SearchScreen> {
   // source-driven (Z Mode off) or the caller forced it, Library otherwise.
   // Search no longer offers its own scope choice — it follows whatever Home
   // is browsing.
-  SearchScope get _scope => (widget.forceSources || !ZModePrefs.enabled)
+  SearchScope get _scope =>
+      (widget.forceSources ||
+          widget.fixedSourceId != null ||
+          !ZModePrefs.enabled)
       ? SearchScope.sources
       : SearchScope.library;
 
@@ -148,6 +156,7 @@ class _SearchScreenState extends State<SearchScreen> {
           repo: _repoForScope(scope),
           history: sl<SearchHistory>(),
           forceMode: widget.forceMode,
+          fixedSourceId: widget.fixedSourceId,
         );
         // SearchStarted only fetches the idle "Top picks" strip, which the
         // metadata search no longer shows — Home already carries Trending,
@@ -174,6 +183,10 @@ class _SearchScreenState extends State<SearchScreen> {
               history: sl<SearchHistory>(),
               scope: scope,
               forceMode: widget.forceMode,
+              fixedSourceId: widget.fixedSourceId,
+              fixedSourceName: widget.fixedSourceId == null
+                  ? null
+                  : sl<SourceRepository>().displayName(widget.fixedSourceId!),
             )
           : _SearchView(
               initialQuery: widget.initialQuery,
@@ -181,6 +194,7 @@ class _SearchScreenState extends State<SearchScreen> {
               focusSignal: widget.focusSignal,
               scope: scope,
               forceMode: widget.forceMode,
+              fixedSourceId: widget.fixedSourceId,
               initialFilters: widget.initialFilters,
             ),
     );
@@ -210,6 +224,7 @@ class _SearchView extends StatefulWidget {
     this.focusSignal,
     required this.scope,
     this.forceMode,
+    this.fixedSourceId,
     this.initialFilters,
   });
 
@@ -218,6 +233,7 @@ class _SearchView extends StatefulWidget {
   final ValueListenable<int>? focusSignal;
   final SearchScope scope;
   final ContentMode? forceMode;
+  final String? fixedSourceId;
   final MetaFilters? initialFilters;
 
   @override
@@ -272,6 +288,12 @@ class _SearchViewState extends State<_SearchView>
   /// pending skeletons, so a mismatch shows up as skeletons for sources that
   /// are never queried.
   List<({String id, String name})> get _modeSources {
+    final fixedSourceId = widget.fixedSourceId;
+    if (fixedSourceId != null) {
+      return _repo.loadedSources
+          .where((source) => source.id == fixedSourceId)
+          .toList(growable: false);
+    }
     final mode = widget.forceMode ?? sl<ContentModeCubit>().state;
     return filterSourcesForMode(
       {for (final s in _repo.loadedSources) s.id: s},
@@ -876,15 +898,20 @@ class _SearchViewState extends State<_SearchView>
     return BlocBuilder<SearchBloc, SearchState>(
       buildWhen: (p, c) => p.currentSourceOnly != c.currentSourceOnly,
       builder: (context, state) {
-        final currentOnly = state.currentSourceOnly;
+        final fixedSourceId = widget.fixedSourceId;
+        final currentOnly = fixedSourceId != null || state.currentSourceOnly;
         return BlocBuilder<ActiveSourceCubit, String>(
           builder: (context, activeId) {
-            final value = currentOnly
+            final value = fixedSourceId != null
+                ? _repo.displayName(fixedSourceId)
+                : currentOnly
                 ? _repo.displayName(activeId)
                 : context.l10n.allSources;
             return GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: () => _openSourcePicker(context),
+              onTap: fixedSourceId == null
+                  ? () => _openSourcePicker(context)
+                  : null,
               child: Container(
                 margin: const EdgeInsets.symmetric(horizontal: 16),
                 // Tighter above than below: the search field already carries
@@ -916,11 +943,12 @@ class _SearchViewState extends State<_SearchView>
                       ),
                     ),
                     const SizedBox(width: 5),
-                    Icon(
-                      Icons.keyboard_arrow_down_rounded,
-                      size: 16,
-                      color: AppColors.textTertiary,
-                    ),
+                    if (fixedSourceId == null)
+                      Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 16,
+                        color: AppColors.textTertiary,
+                      ),
                   ],
                 ),
               ),
@@ -1361,25 +1389,31 @@ class _SearchViewState extends State<_SearchView>
           p.mihonFiltersBySource != c.mihonFiltersBySource,
       builder: (context, state) {
         if (!state.currentSourceOnly) return const SizedBox.shrink();
+        final fixedSourceId = widget.fixedSourceId;
+        if (fixedSourceId != null) {
+          return _sourceFilterButton(fixedSourceId, state);
+        }
         return BlocBuilder<ActiveSourceCubit, String>(
           builder: (context, activeId) {
-            final filter = _sourceFilterFor(activeId, state);
-            if (filter.onFilter == null) return const SizedBox.shrink();
-            return IconButton(
-              onPressed: filter.onFilter,
-              icon: Icon(
-                Icons.tune_rounded,
-                size: 20,
-                color: filter.active
-                    ? AppColors.accent
-                    : AppColors.textTertiary,
-              ),
-              tooltip: context.l10n.sourceFilters,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            );
+            return _sourceFilterButton(activeId, state);
           },
         );
       },
+    );
+  }
+
+  Widget _sourceFilterButton(String sourceId, SearchState state) {
+    final filter = _sourceFilterFor(sourceId, state);
+    if (filter.onFilter == null) return const SizedBox.shrink();
+    return IconButton(
+      onPressed: filter.onFilter,
+      icon: Icon(
+        Icons.tune_rounded,
+        size: 20,
+        color: filter.active ? AppColors.accent : AppColors.textTertiary,
+      ),
+      tooltip: context.l10n.sourceFilters,
+      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
     );
   }
 

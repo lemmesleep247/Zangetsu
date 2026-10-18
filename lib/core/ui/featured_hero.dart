@@ -118,13 +118,19 @@ class _FeaturedHeroState extends State<FeaturedHero> {
   @override
   void didUpdateWidget(FeaturedHero old) {
     super.didUpdateWidget(old);
-    if (_art(old.item) != _art(widget.item)) {
+    // Keyed on the ITEM, not on its artwork. Two different titles can share one
+    // cover URL (same art, or both with no cover), and keying on the art left the
+    // previous title's TMDB logo sitting on the new hero — the "old header".
+    if (!_sameItem(old.item, widget.item)) {
       _artColor = null;
       _logoUrl = null;
       _loadPalette();
       _loadLogo();
     }
   }
+
+  static bool _sameItem(MediaItem a, MediaItem b) =>
+      a.sourceId == b.sourceId && a.id == b.id;
 
   /// Best-effort TMDB title-logo lookup; on a hit, swap the text title for the
   /// logo image. Stays as text until (and unless) a logo resolves.

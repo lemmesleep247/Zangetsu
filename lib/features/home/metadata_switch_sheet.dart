@@ -10,6 +10,10 @@ import '../../core/zmode/metadata_provider_prefs.dart';
 import '../../core/zmode/zmode_prefs.dart';
 import '../../l10n/l10n.dart';
 
+enum _MetadataSheetAction { sourceCatalogue }
+
+enum HomeCatalogueSelection { metadata, source }
+
 /// Which metadata setting matches where the user is standing. The sheet shows
 /// both either way; this only decides which one it puts first.
 ///
@@ -55,8 +59,11 @@ typedef _Brand = ({
 /// reloads Home.
 ///
 /// A no-op when the preference isn't registered, same guard Settings uses.
-Future<void> showMetadataSwitchSheet(BuildContext context) async {
-  if (!sl.isRegistered<MetadataProviderPrefs>()) return;
+Future<HomeCatalogueSelection?> showMetadataSwitchSheet(
+  BuildContext context, {
+  bool sourceCatalogueSelected = false,
+}) async {
+  if (!sl.isRegistered<MetadataProviderPrefs>()) return null;
   final prefs = sl<MetadataProviderPrefs>();
   final l10n = context.l10n;
   // Both sections, always. Hiding the one you are not standing in made the
@@ -71,7 +78,7 @@ Future<void> showMetadataSwitchSheet(BuildContext context) async {
     for (final p in AnimeProvider.values)
       _ProviderRow(
         brand: _animeBrand(p),
-        selected: prefs.anime == p,
+        selected: !sourceCatalogueSelected && prefs.anime == p,
         // Only worth saying while it is actually true.
         warning: p == AnimeProvider.mal && malListNeedsLogin()
             ? l10n.malLoginForLists
@@ -85,7 +92,7 @@ Future<void> showMetadataSwitchSheet(BuildContext context) async {
     for (final p in VideoProvider.values)
       _ProviderRow(
         brand: _videoBrand(p),
-        selected: prefs.video == p,
+        selected: !sourceCatalogueSelected && prefs.video == p,
         onTap: () => Navigator.of(sheet).pop(p),
       ),
   ];
@@ -129,6 +136,32 @@ Future<void> showMetadataSwitchSheet(BuildContext context) async {
                   const SizedBox(height: 6),
                   ...animeSection(sheet),
                 ],
+                const Divider(height: 18, indent: 20, endIndent: 20),
+                ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: AppColors.accentSoft,
+                    child: Icon(
+                      Icons.extension_outlined,
+                      color: AppColors.accent,
+                    ),
+                  ),
+                  title: const Text('Source Catalogue'),
+                  subtitle: const Text('Show installed source lists in Home'),
+                  trailing: Switch(
+                    value: sourceCatalogueSelected,
+                    activeThumbColor: AppColors.accent,
+                    onChanged: (selected) => Navigator.of(sheet).pop(
+                      selected
+                          ? _MetadataSheetAction.sourceCatalogue
+                          : HomeCatalogueSelection.metadata,
+                    ),
+                  ),
+                  onTap: () => Navigator.of(sheet).pop(
+                    sourceCatalogueSelected
+                        ? HomeCatalogueSelection.metadata
+                        : _MetadataSheetAction.sourceCatalogue,
+                  ),
+                ),
                 const SizedBox(height: 10),
               ],
             ),
@@ -138,12 +171,19 @@ Future<void> showMetadataSwitchSheet(BuildContext context) async {
     },
   );
 
-  if (picked == null) return;
+  if (picked == null) return null;
+  if (picked == _MetadataSheetAction.sourceCatalogue) {
+    return HomeCatalogueSelection.source;
+  }
+  if (picked == HomeCatalogueSelection.metadata) {
+    return HomeCatalogueSelection.metadata;
+  }
   if (picked is VideoProvider) {
     await prefs.setVideo(picked);
   } else if (picked is AnimeProvider) {
     await prefs.setAnime(picked);
   }
+  return HomeCatalogueSelection.metadata;
 }
 
 /// Header above each pair. Two settings live in one sheet now, so each needs

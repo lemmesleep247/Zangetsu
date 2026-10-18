@@ -122,4 +122,46 @@ void main() {
     expect(builtHeroIds, contains('second'));
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  testWidgets('replaces every banner page when source results change', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: FeaturedCarousel(
+            items: [_item('same-first'), _item('old-source-second')],
+            inList: (_) => false,
+            onPlay: (_) {},
+            onInfo: (_) {},
+            onToggleList: (_) {},
+            style: HeroTransition.cinematic,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: FeaturedCarousel(
+            items: [_item('same-first'), _item('new-source-second')],
+            inList: (_) => false,
+            onPlay: (_) {},
+            onInfo: (_) {},
+            onToggleList: (_) {},
+            style: HeroTransition.cinematic,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pump();
+
+    expect(find.text('Show new-source-second'), findsOneWidget);
+    expect(find.text('Show old-source-second'), findsNothing);
+  });
 }

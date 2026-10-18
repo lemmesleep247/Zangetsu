@@ -32,6 +32,7 @@ import '../../core/playback/my_list.dart';
 import '../../core/playback/playback_prefs.dart';
 import '../../core/playback/watch_history.dart';
 import '../auth/reconnect.dart';
+import '../home/home_catalogue_prefs.dart';
 import '../../core/privacy/incognito_mode.dart';
 import '../../core/profiles/viewer_profile.dart';
 import '../../core/profiles/viewer_profile_avatar.dart';
@@ -1206,8 +1207,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       keywords:
           'anime manga novel metadata provider anilist mal myanimelist '
           'movie tv series tmdb simkl fallback catalogue',
-      trailing: _value('${_animeProviderLabel()} · ${_videoProviderLabel()}'),
-      onTap: () => showMetadataSwitchSheet(context),
+      trailing: _value(
+        HomeCataloguePrefs.sourceSelected
+            ? 'Source Catalogue'
+            : '${_animeProviderLabel()} · ${_videoProviderLabel()}',
+      ),
+      onTap: () async {
+        final selection = await showMetadataSwitchSheet(
+          context,
+          sourceCatalogueSelected: HomeCataloguePrefs.sourceSelected,
+        );
+        if (!mounted || selection == null) return;
+        await HomeCataloguePrefs.setSourceSelected(
+          selection == HomeCatalogueSelection.source,
+        );
+        if (mounted) setState(() {});
+      },
     ),
     _SettingsEntry(
       section: SettingsSection.interface,
