@@ -7,6 +7,7 @@ import '../../core/ui/app_dialog.dart';
 import '../../core/ui/app_toast.dart';
 import '../../core/di/injector.dart';
 import '../../core/mihon/mihon_extension_service.dart';
+import '../../core/mangayomi/mangayomi_cloudflare.dart';
 import '../../core/models/home_section.dart';
 import '../../core/models/media_item.dart';
 import '../../core/repository/source_actions.dart' as source_actions;
@@ -32,6 +33,8 @@ import '../../core/aniyomi/aniyomi_filters.dart';
 import '../../core/mihon/mihon_filters.dart';
 import '../aniyomi/aniyomi_filter_sheet.dart';
 import '../mihon/mihon_filter_sheet.dart';
+import 'mangayomi_filter_sheet.dart';
+import 'dart:convert';
 import 'bloc/search_state.dart' show SearchEcosystem, ecosystemOf;
 import 'cubit/browse_source_cubit.dart';
 
@@ -142,7 +145,9 @@ class _BrowseSourceViewState extends State<_BrowseSourceView> {
   /// Zangetsu sources have no such concept, so they get no filter button
   /// rather than one that opens an empty sheet.
   bool get _canFilter =>
-      _eco == SearchEcosystem.aniyomi || _eco == SearchEcosystem.mihon;
+      _eco == SearchEcosystem.aniyomi ||
+      _eco == SearchEcosystem.mihon ||
+      _eco == SearchEcosystem.mangayomi;
   late final String _kind = sourceTypeOf(widget.sourceId).name;
   late final String? _language = sl<SourceRepository>().languageFor(
     widget.sourceId,
@@ -280,7 +285,31 @@ class _BrowseSourceViewState extends State<_BrowseSourceView> {
       widget.sourceId,
     );
     if (target == null || target.isEmpty) return;
-    await MihonExtensionService.solveCloudflare(target);
+    if (widget.sourceId.startsWith('mg:')) {
+      await MangayomiCloudflare.solve(target);
+    } else {
+      await MihonExtensionService.solveCloudflare(target);
+    }
+    if (widget.sourceId.startsWith('mg:') && mounted) {
+      final cubit = context.read<BrowseSourceCubit>();
+      final state = cubit.state;
+      if (state.searchFailed && state.query.isNotEmpty) {
+        await cubit.search(state.query);
+      } else if (state.searchFailed && state.filtersJson.isNotEmpty) {
+        await cubit.applyFilters(state.filtersJson);
+      } else {
+        await cubit.load();
+      }
+    }
+  }
+
+  Widget _mangayomiCloudflareState(BuildContext context) {
+    return EmptyState(
+      icon: Icons.shield_outlined,
+      message: 'This Mangayomi source is protected by Cloudflare.',
+      actionLabel: context.l10n.solveCloudflare,
+      onAction: _solveCloudflare,
+    );
   }
 
   /// Let the user point this source's site actions at a domain of their own.
@@ -380,7 +409,21 @@ class _BrowseSourceViewState extends State<_BrowseSourceView> {
   /// search screen does.
   Future<void> _openFilters(String stored) => _eco == SearchEcosystem.mihon
       ? _openMihonFilters(stored)
+      : _eco == SearchEcosystem.mangayomi
+      ? _openMangayomiFilters(stored)
       : _openAniFilters(stored);
+
+  Future<void> _openMangayomiFilters(String stored) async {
+    final filters = stored.isNotEmpty
+        ? (jsonDecode(stored) as List)
+              .map((item) => Map<String, dynamic>.from(item as Map))
+              .toList()
+        : await sl<SourceRepository>().mangayomiFilters(widget.sourceId);
+    if (!mounted || !_warnIfEmpty(filters)) return;
+    final result = await showMangayomiFilterSheet(context, filters);
+    if (result == null || !mounted) return;
+    await context.read<BrowseSourceCubit>().applyFilters(jsonEncode(result));
+  }
 
   /// [stored] is the selection already applied, so reopening the sheet shows
   /// the last choice instead of resetting to defaults.
@@ -545,6 +588,9 @@ class _BrowseSourceViewState extends State<_BrowseSourceView> {
                 // both are fixable from right here rather than from the
                 // overflow menu the user has no reason to open.
                 final blocked = CfSolveNeeded.sourceFlagged(widget.sourceId);
+                if (blocked && widget.sourceId.startsWith('mg:')) {
+                  return _mangayomiCloudflareState(context);
+                }
                 return EmptyState(
                   icon: blocked
                       ? Icons.shield_outlined
@@ -603,6 +649,10 @@ class _BrowseSourceViewState extends State<_BrowseSourceView> {
       return const Center(child: CircularProgressIndicator());
     }
     if (state.searchFailed) {
+      if (widget.sourceId.startsWith('mg:') &&
+          CfSolveNeeded.sourceFlagged(widget.sourceId)) {
+        return _mangayomiCloudflareState(context);
+      }
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),

@@ -18,6 +18,7 @@ import '../../core/ui/global_messenger.dart';
 import '../../core/ui/native_cover_provider.dart';
 import '../../core/metadata/title_logo_service.dart';
 import '../../core/mihon/mihon_extension_service.dart';
+import '../../core/mangayomi/mangayomi_cloudflare.dart';
 import '../../core/models/episode.dart';
 import '../../core/models/home_section.dart';
 import '../../core/models/media_detail.dart';
@@ -685,8 +686,14 @@ class _HomeScreenTvState extends State<HomeScreenTv> {
     final noSourceForMode = ZModePrefs.enabled
         ? false
         : switch (mode) {
-            ContentMode.manga => !activeId.startsWith('mihon:'),
-            ContentMode.novel => !activeId.startsWith('lnr:'),
+            ContentMode.manga => !sourceIdMatchesContentMode(
+              activeId,
+              ContentMode.manga,
+            ),
+            ContentMode.novel => !sourceIdMatchesContentMode(
+              activeId,
+              ContentMode.novel,
+            ),
             ContentMode.anime => false,
             null => false,
           };
@@ -716,10 +723,14 @@ class _HomeScreenTvState extends State<HomeScreenTv> {
           onSolveCloudflare: state.cloudflareUrl == null
               ? null
               : () async {
-                  // Mihon Cloudflare solve — same path as phone Home.
-                  await MihonExtensionService.solveCloudflare(
-                    state.cloudflareUrl!,
-                  );
+                  // Native-extension Cloudflare solve — same path as phone Home.
+                  if (repo.sourceId.startsWith('mg:')) {
+                    await MangayomiCloudflare.solve(state.cloudflareUrl!);
+                  } else {
+                    await MihonExtensionService.solveCloudflare(
+                      state.cloudflareUrl!,
+                    );
+                  }
                   if (context.mounted) {
                     context.read<HomeCubit>().load(reset: true);
                   }

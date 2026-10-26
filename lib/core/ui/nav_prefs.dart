@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:watch_app/core/hive/safe_box.dart';
 
 /// A tab the phone dock can show.
@@ -27,6 +28,8 @@ enum DockTab {
   bool get isPinned => this == DockTab.profile;
 }
 
+enum NavBarStyle { dock, liquid }
+
 /// Which tabs the phone dock shows, and in what order.
 ///
 /// Phone only — the TV rail ([RootShellTv]) has its own fixed list and is
@@ -36,6 +39,12 @@ class NavPrefs extends ChangeNotifier {
   static const String _tabsKey = 'tabs';
   static const String _startKey = 'start';
   static const String _keepDockExpandedKey = 'keepDockExpanded';
+  static const String _styleKey = 'style';
+  static const String _glassTintKey = 'glassTint';
+  static const String _glassQualityKey = 'glassQuality';
+  static const String _glassBlurKey = 'glassBlur';
+  static const double defaultGlassTint = 0.82;
+  static const GlassQuality defaultGlassQuality = GlassQuality.premium;
 
   /// The dock is a fixed-width capsule that fits five icons; below three it
   /// looks empty and above five the labels start colliding.
@@ -119,17 +128,70 @@ class NavPrefs extends ChangeNotifier {
     notifyListeners();
   }
 
+  NavBarStyle get style =>
+      NavBarStyle.values
+          .where((value) => value.name == _box?.get(_styleKey))
+          .firstOrNull ??
+      NavBarStyle.liquid;
+
+  Future<void> setStyle(NavBarStyle value) async {
+    await _box?.put(_styleKey, value.name);
+    notifyListeners();
+  }
+
+  /// White-to-black tint position for the phone's liquid tab bar and mode
+  /// button. This remains local to the device.
+  double get glassTint {
+    final value = _box?.get(_glassTintKey);
+    return value is num
+        ? value.toDouble().clamp(0.0, 1.0).toDouble()
+        : defaultGlassTint;
+  }
+
+  Future<void> setGlassTint(double value) async {
+    await _box?.put(_glassTintKey, value.clamp(0.0, 1.0).toDouble());
+    notifyListeners();
+  }
+
+  GlassQuality get glassQuality =>
+      _box?.get(_glassQualityKey) == GlassQuality.standard.name
+      ? GlassQuality.standard
+      : defaultGlassQuality;
+
+  Future<void> setGlassQuality(GlassQuality value) async {
+    await _box?.put(
+      _glassQualityKey,
+      value == GlassQuality.standard ? value.name : defaultGlassQuality.name,
+    );
+    notifyListeners();
+  }
+
+  bool get glassBlurEnabled => _box?.get(_glassBlurKey) != false;
+
+  Future<void> setGlassBlurEnabled(bool value) async {
+    await _box?.put(_glassBlurKey, value);
+    notifyListeners();
+  }
+
   Future<void> reset() async {
     await _box?.delete(_tabsKey);
     await _box?.delete(_startKey);
     await _box?.delete(_keepDockExpandedKey);
+    await _box?.delete(_styleKey);
+    await _box?.delete(_glassTintKey);
+    await _box?.delete(_glassQualityKey);
+    await _box?.delete(_glassBlurKey);
     notifyListeners();
   }
 
   bool get isDefault =>
       listEquals(tabs, defaultTabs) &&
       startTab == defaultTabs.first &&
-      !keepDockExpanded;
+      !keepDockExpanded &&
+      style == NavBarStyle.liquid &&
+      glassTint == defaultGlassTint &&
+      glassQuality == defaultGlassQuality &&
+      glassBlurEnabled;
 
   /// The validation the getter and setter both apply, exposed so the
   /// invariants can be tested without opening a Hive box.

@@ -93,10 +93,15 @@ void main() {
     await tester.pumpAndSettle();
 
     final toggle = find.byKey(const ValueKey('keep-dock-expanded-switch'));
+    await tester.scrollUntilVisible(
+      toggle,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(toggle, findsOneWidget);
     expect(tester.widget<Switch>(toggle).value, isFalse);
 
-    await tester.tap(find.text('Keep dock expanded'));
+    await tester.tap(find.text('Keep navigation expanded'));
     await tester.pump();
 
     expect(tester.widget<Switch>(toggle).value, isTrue);

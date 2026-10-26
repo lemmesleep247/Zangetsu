@@ -37,6 +37,7 @@ import '../../core/cache/app_image_cache.dart';
 import '../../core/di/injector.dart';
 import '../../core/discord/discord_rpc.dart';
 import '../../core/mihon/mihon_extension_service.dart';
+import '../../core/mangayomi/mangayomi_cloudflare.dart';
 import '../../core/metadata/episode_metadata_service.dart';
 import '../../core/metadata/metadata_enrichment.dart';
 import '../../core/notify/cs_notify.dart';
@@ -234,9 +235,10 @@ String? _repoLabelFromUrl(String? repoUrl) {
 /// title opened from AniList/TMDB (Z Mode) offers the same solve instead of
 /// failing silently. Uses the SAME solver Home does and reloads on success.
 class _DetailCloudflareBlocked extends StatefulWidget {
-  const _DetailCloudflareBlocked({required this.url});
+  const _DetailCloudflareBlocked({required this.url, this.isMangayomi = false});
 
   final String url;
+  final bool isMangayomi;
 
   @override
   State<_DetailCloudflareBlocked> createState() =>
@@ -255,7 +257,9 @@ class _DetailCloudflareBlockedState extends State<_DetailCloudflareBlocked> {
     // matching solve (the cookie has to land in THIS host's own cache, not
     // just the system-wide one MihonExtensionService's solve populates).
     final host = Uri.tryParse(widget.url)?.host ?? '';
-    if (CfSolveNeeded.hostFlagged(host)) {
+    if (widget.isMangayomi) {
+      await MangayomiCloudflare.solve(widget.url);
+    } else if (CfSolveNeeded.hostFlagged(host)) {
       await sl<ProviderManager>().solveCloudflareForHost(host, widget.url);
     } else {
       await MihonExtensionService.solveCloudflare(widget.url);
@@ -287,7 +291,7 @@ class _DetailCloudflareBlockedState extends State<_DetailCloudflareBlocked> {
               ),
             ),
             const SizedBox(height: 20),
-            const Text(
+            Text(
               'This source is protected by Cloudflare',
               textAlign: TextAlign.center,
               style: TextStyle(
@@ -297,7 +301,7 @@ class _DetailCloudflareBlockedState extends State<_DetailCloudflareBlocked> {
               ),
             ),
             const SizedBox(height: 10),
-            const Text(
+            Text(
               'Complete the Cloudflare check once and this title will load '
               'normally from then on.',
               textAlign: TextAlign.center,
@@ -1947,7 +1951,12 @@ class _DetailViewState extends State<_DetailView>
             return const _DetailSkeleton(heroHeight: _expandedHeight);
           }
           if (state.cloudflareUrl != null) {
-            return _DetailCloudflareBlocked(url: state.cloudflareUrl!);
+            return _DetailCloudflareBlocked(
+              url: state.cloudflareUrl!,
+              isMangayomi:
+                  widget.item.sourceId.startsWith('mg:') ||
+                  (state.detail?.sourceId.startsWith('mg:') ?? false),
+            );
           }
           if (state.status == DetailStatus.error || state.detail == null) {
             // The row you tapped already carried a title and a cover, so a
