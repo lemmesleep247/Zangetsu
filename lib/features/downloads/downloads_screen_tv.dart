@@ -17,6 +17,7 @@ import '../../core/ui/states.dart';
 import '../../l10n/l10n.dart';
 import '../settings/download_location_screen.dart' show folderLabelFromUri;
 import 'downloads_screen.dart';
+import 'downloaded_episode_playback.dart';
 
 /// TV Downloads: a full-screen focusable list of downloaded episodes backed by
 /// [DownloadManager]. Mirrors the phone's [DownloadsScreen] layout and data;
@@ -201,8 +202,11 @@ class _TvShowGroup extends StatelessWidget {
             // (Play/Pause/Resume/Cancel/Delete as applicable).
             onTap: () => showDialog<void>(
               context: context,
-              builder: (_) =>
-                  _TvDownloadActions(record: records[j], manager: manager),
+              builder: (_) => _TvDownloadActions(
+                record: records[j],
+                manager: manager,
+                screenContext: context,
+              ),
             ),
             // Reuse the phone's tile widget unchanged — only the interaction
             // model changes (D-pad vs touch). The tile's own ListTile.onTap
@@ -314,10 +318,19 @@ class _TvShowGroup extends StatelessWidget {
 /// for the record's current status, each D-pad focusable. Mirrors the
 /// `_TvOptionPicker` pattern in settings_tv_pickers.dart.
 class _TvDownloadActions extends StatelessWidget {
-  const _TvDownloadActions({required this.record, required this.manager});
+  const _TvDownloadActions({
+    required this.record,
+    required this.manager,
+    this.screenContext,
+  });
 
   final DownloadRecord record;
   final DownloadManager manager;
+
+  /// The Downloads screen's context. The dialog's own context dies with the
+  /// pop animation — awaiting file checks on it returns silently, so playback
+  /// launches from out here instead. Null in tests, which never pop.
+  final BuildContext? screenContext;
 
   List<(String, IconData, VoidCallback)> _actions(BuildContext context) {
     final l10n = context.l10n;
@@ -327,7 +340,21 @@ class _TvDownloadActions extends StatelessWidget {
       out.add((
         l10n.play,
         Icons.play_arrow_rounded,
-        () => launchDownloadedEpisode(context, r),
+        () async {
+          final queue = await downloadedSiblingQueue(
+            showRecords: manager.byShow[r.showId] ?? const [],
+            record: r,
+            filePresent: manager.filePresent,
+          );
+          final launchCtx = screenContext ?? context;
+          if (!launchCtx.mounted) return;
+          await launchDownloadedEpisode(
+            launchCtx,
+            r,
+            episodes: queue.episodes,
+            startIndex: queue.startIndex,
+          );
+        },
       ));
     }
     if (r.status == DownloadStatus.downloading) {

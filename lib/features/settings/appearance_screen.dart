@@ -12,9 +12,11 @@ import '../../core/di/injector.dart';
 import '../../core/profiles/viewer_profile.dart';
 import '../../l10n/l10n.dart';
 import '../../core/ui/animation_prefs.dart';
+import '../../core/ui/detail_prefs.dart';
 
 /// Theme and colour: accent as preview cards (+ a Custom colour picker), the
-/// pure-black AMOLED toggle, the app font and how lists animate.
+/// pure-black AMOLED toggle, the adaptive poster tint, the app font and how
+/// lists animate.
 ///
 /// The app icon, splash and Home banner pickers used to live at the bottom of
 /// this page, below four other sections. They answer a different question —
@@ -176,6 +178,24 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
                 value: ThemeController.amoled,
                 onChanged: (value) => _updateProfileTheme(amoled: value),
               ),
+              _switchTile(
+                icon: Icons.auto_awesome_outlined,
+                title: 'Adaptive colour',
+                subtitle:
+                    'Tints the background of Home and Detail from the poster colour',
+                value: ThemeController.adaptiveColour,
+                onChanged: ThemeController.setAdaptiveColour,
+                subtitleMaxLines: null,
+              ),
+              _switchTile(
+                icon: Icons.title_rounded,
+                title: 'Title artwork',
+                subtitle:
+                    'Show the official title logo instead of plain text on Detail',
+                value: ThemeController.titleLogo,
+                onChanged: ThemeController.setTitleLogo,
+                subtitleMaxLines: null,
+              ),
             ],
           ),
 
@@ -216,6 +236,21 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
                   ),
                   onTap: _pickAnimStyle,
                 ),
+            ],
+          ),
+          // ── Behaviour ─────────────────────────────────────────────────────
+          SettingsSectionLabel('Behaviour'),
+          SettingsCard(
+            children: [
+              _switchTile(
+                icon: Icons.swap_vert_rounded,
+                title: 'Reverse episode list always on',
+                subtitle:
+                    'Every detail screen opens newest-first; the list button still flips it for that visit',
+                value: DetailPrefs.reverseEpisodesDefault,
+                onChanged: DetailPrefs.setReverseEpisodesDefault,
+                subtitleMaxLines: null,
+              ),
             ],
           ),
         ],
@@ -285,7 +320,9 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    f.bundled
+                    AppFontPrefs.isSystem(f.family)
+                        ? "Your phone's default font"
+                        : f.bundled
                         ? 'Watch anime, movies and series'
                         : 'Downloads on first use',
                     style: AppText.caption.copyWith(
@@ -294,7 +331,7 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
                   ),
                   trailing: f.family == AppFontPrefs.family
                       ? Icon(Icons.check, color: AppColors.accent)
-                      : (f.bundled
+                      : (f.bundled || AppFontPrefs.isSystem(f.family)
                             ? null
                             : Icon(
                                 Icons.download_outlined,
@@ -338,6 +375,7 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
     required String subtitle,
     required bool value,
     required Future<void> Function(bool) onChanged,
+    int? subtitleMaxLines = 1,
   }) {
     Future<void> flip(bool v) async {
       await onChanged(v);
@@ -348,6 +386,7 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
       icon: icon,
       title: title,
       subtitle: subtitle,
+      subtitleMaxLines: subtitleMaxLines,
       onTap: () => flip(!value),
       trailing: Switch.adaptive(
         value: value,
