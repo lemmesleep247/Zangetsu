@@ -16,6 +16,7 @@ import '../../core/app_mode.dart';
 import '../../core/di/injector.dart';
 import '../../core/discord/discord_presence.dart';
 import '../../core/discord/discord_rpc.dart';
+import '../../core/share/share_link.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/metadata/episode_metadata_service.dart';
 import '../../core/tracker/tracker_hub.dart';
@@ -627,6 +628,22 @@ class PlayerCubit extends Cubit<PlayerState> {
   bool _discordPaused = false;
 
   Episode get currentEpisode => episodes[state.currentIndex];
+
+  /// The provider actually playing, not the session id: a Z Mode session's
+  /// own id is just 'zm', so read the resolver's winner for the current
+  /// episode and fall back to [sourceId] when nothing resolved yet.
+  String get playingSourceId {
+    try {
+      if (sl.isRegistered<PlaybackResolver>()) {
+        final winner = sl<PlaybackResolver>().resolvedSourceId(
+          _episodeUrl(currentEpisode),
+          category: _activeCategory,
+        );
+        if (winner != null && winner.isNotEmpty) return winner;
+      }
+    } catch (_) {}
+    return sourceId;
+  }
 
   /// Stable per-show key for resume (the show URL, falling back to sourceId) so
   /// episodes with the same id across different shows don't collide.
@@ -3907,6 +3924,18 @@ class PlayerCubit extends Cubit<PlayerState> {
         position: _lastPos,
         duration: _lastDur,
         playing: !_discordPaused,
+        // Friend tapping "Open in Zangetsu" lands on this exact title (or the
+        // install page without the app). Same anime/movie call as episode
+        // enrichment so the link's type hint matches.
+        openUrl: ShareLink.watchUrl(
+          sourceId: sourceId,
+          url: showUrl,
+          title: discordTitle,
+          type: (scrobbleTitle != null || malId != null)
+              ? ProviderType.anime
+              : ProviderType.movie,
+          cover: cover,
+        ),
       ),
     );
   }

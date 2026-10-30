@@ -5,6 +5,9 @@
          providers, downloads). -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Requested only when the user starts custom phone voice search. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-feature android:name="android.hardware.microphone" android:required="false"/>
     <!-- Download progress notification (Android 13+). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- In-app update: install the downloaded APK via the system installer. -->
@@ -109,6 +112,13 @@
                 <data android:scheme="zangetsu" android:host="room"/>
                 <!-- TV pairing QR: zangetsu://pair?code=… (see OpenLinkService). -->
                 <data android:scheme="zangetsu" android:host="pair"/>
+            </intent-filter>
+            <!-- Keep the hostless Discord callback separate from tracker hosts. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="discord-1518610045422665748"/>
             </intent-filter>
             <!-- "Open with" for local video files, so a file manager / Downloads
                  offers Zangetsu the way it offers any other player.
@@ -321,6 +331,9 @@
              (package visibility on Android 11+). -->
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH"/>
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
         </intent>
     </queries>
 </manifest>

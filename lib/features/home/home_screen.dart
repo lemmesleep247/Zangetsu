@@ -15,6 +15,7 @@ import '../../core/platform/apple_tv.dart';
 import '../../core/mihon/mihon_extension_service.dart';
 import '../../core/mihon/mihon_image_provider.dart';
 import '../../core/mode/content_mode.dart';
+import '../../core/ui/nav_prefs.dart';
 import '../../core/mode/content_mode_cubit.dart';
 import '../../core/models/watch_status.dart';
 import '../../core/tracker/tracker_hub.dart';
@@ -137,7 +138,9 @@ class _HomeViewState extends State<_HomeView>
   final _sourceCatalogueController = SourceCatalogueHomeController();
   StreamSubscription<ContentMode>? _sourceCatalogueModeSubscription;
   late final ValueNotifier<bool> _sourceCatalogueSelection;
-  String? _sourceCatalogueSourceId = HomeCataloguePrefs.sourceId;
+  // Per-mode pick, loaded in initState (needs the cubit) and reloaded on
+  // every mode switch — a single shared id is what made manga forget anime.
+  String? _sourceCatalogueSourceId;
   List<HomeSection> _sourceCatalogueSections = const [];
   bool _sourceCatalogueSelected = HomeCataloguePrefs.sourceSelected;
 
@@ -171,11 +174,21 @@ class _HomeViewState extends State<_HomeView>
     super.initState();
     _sourceCatalogueSelection = HomeCataloguePrefs.sourceSelection;
     _sourceCatalogueSelection.addListener(_onSourceCatalogueSelectionChanged);
+    _sourceCatalogueSourceId = HomeCataloguePrefs.sourceIdFor(
+      sl<ContentModeCubit>().state,
+    );
     _sourceCatalogueModeSubscription = sl<ContentModeCubit>().stream.listen((
-      _,
+      mode,
     ) {
-      if (mounted && _sourceCatalogueSelected) {
-        setState(() => _sourceCatalogueSections = const []);
+      if (!mounted) return;
+      if (_sourceCatalogueSelected) {
+        // Reload THIS mode's saved source: the content widget resolves its
+        // fallback from the id we hand it, so handing it the other mode's id
+        // would persist a fallback over this mode's real pick.
+        setState(() {
+          _sourceCatalogueSourceId = HomeCataloguePrefs.sourceIdFor(mode);
+          _sourceCatalogueSections = const [];
+        });
       }
     });
     ThemeController.revision.addListener(_onThemeRevision);
@@ -274,7 +287,12 @@ class _HomeViewState extends State<_HomeView>
       _sourceCatalogueSourceId = sourceId;
       _sourceCatalogueSections = const [];
     });
-    unawaited(HomeCataloguePrefs.setSourceId(sourceId));
+    unawaited(
+      HomeCataloguePrefs.setSourceIdFor(
+        sl<ContentModeCubit>().state,
+        sourceId,
+      ),
+    );
   }
 
   void _setSourceCatalogueSections(List<HomeSection> sections) {
@@ -807,7 +825,7 @@ class _HomeViewState extends State<_HomeView>
                   ),
                 );
           final actions = [
-            _headerDownloadButton(edgeBanner: edgeBanner),
+            HomeDownloadsAction(edgeBanner: edgeBanner),
             _notificationBell(context, edgeBanner: edgeBanner),
             HomeSearchAction(
               edgeBanner: edgeBanner,
@@ -883,11 +901,6 @@ class _HomeViewState extends State<_HomeView>
 
   /// The banner for [bannerId], with the same items and the same callbacks
   /// whichever one is showing.
-  ///
-  /// [BannerStyle.defaultId] returns the carousel exactly as it was written —
-  /// this switch is the only thing standing between Home and the banner every
-  /// install already has, and the other branch is a separate widget that never
-  /// runs unless someone opts in.
   Widget _featuredBanner(String bannerId, List<MediaItem> heroItems) {
     final reading = sl<ContentModeCubit>().state.isReading;
     void toggleList(MediaItem m) {
@@ -936,7 +949,9 @@ class _HomeViewState extends State<_HomeView>
           onInfo: onInfo,
           meta: _heroMeta,
           onArtColor: ThemeController.adaptiveColour
-              ? (c) => _heroTint.value = c == null ? null : tintFromDominant(c)
+              ? (c) => _heroTint.value = c == null
+                    ? null
+                    : tintFromDominant(c, blend: adaptiveColourBlend)
               : null,
           backgroundTint: ThemeController.adaptiveColour ? _heroTint : null,
         );
@@ -952,31 +967,14 @@ class _HomeViewState extends State<_HomeView>
           meta: _heroMeta,
           style: HeroTransition.cinematic,
           onArtColor: ThemeController.adaptiveColour
-              ? (c) => _heroTint.value = c == null ? null : tintFromDominant(c)
+              ? (c) => _heroTint.value = c == null
+                    ? null
+                    : tintFromDominant(c, blend: adaptiveColourBlend)
               : null,
           backgroundTint: ThemeController.adaptiveColour ? _heroTint : null,
           isActive: widget.isTabActive,
         );
     }
-  }
-
-  /// Header download shortcut → [DownloadsScreen]. Same shape as
-  /// [HomeSearchAction]: flat icon, no badge — the screen itself is the
-  /// progress view, so there's nothing to surface here. Pushed as a normal
-  /// route (with back), unlike the dock tab which suppresses it.
-  Widget _headerDownloadButton({bool edgeBanner = false}) {
-    return IconButton(
-      icon: DockIcon(
-        DockGlyph.download,
-        color: edgeBanner ? Colors.white : AppColors.textSecondary,
-        size: 22,
-      ),
-      tooltip: context.l10n.downloads,
-      style: edgeBanner ? _edgeHeaderButtonStyle() : null,
-      onPressed: () => Navigator.of(
-        context,
-      ).push(MaterialPageRoute<void>(builder: (_) => const DownloadsScreen())),
-    );
   }
 
   /// Flat bell → Notifications screen. The accent dot shows while any
@@ -1192,10 +1190,13 @@ class _HomeViewState extends State<_HomeView>
       bloc: sl<ContentModeCubit>(),
       builder: (context, mode) => SourceCatalogueHomeContent(
         controller: _sourceCatalogueController,
-        initialSourceId: _sourceCatalogueSourceId,
+        // Fresh prefs read, not the field: the cubit emits before our stream
+        // listener refreshes the field, and handing the content a stale
+        // (other-mode) id here is exactly what persisted fallbacks over picks.
+        initialSourceId: HomeCataloguePrefs.sourceIdFor(mode),
         onSourceSelected: (sourceId) {
           _sourceCatalogueSourceId = sourceId;
-          unawaited(HomeCataloguePrefs.setSourceId(sourceId));
+          unawaited(HomeCataloguePrefs.setSourceIdFor(mode, sourceId));
         },
         onSectionsChanged: _setSourceCatalogueSections,
         sectionBuilder: (section) =>
@@ -2171,9 +2172,45 @@ class _HomeViewState extends State<_HomeView>
   }
 }
 
-/// Opens [SearchScreen] — the primary way into search now that it's off the
-/// dock. Normally Search follows Z Mode; Home passes [fixedSourceId] when its
-/// Source Catalogue is selected so the query stays on that source.
+/// Header download shortcut → [DownloadsScreen]. Hidden while Downloads is
+/// a dock tab, so the bar and the header never offer it twice — same rule
+/// as [HomeSearchAction].
+class HomeDownloadsAction extends StatelessWidget {
+  const HomeDownloadsAction({super.key, this.edgeBanner = false});
+
+  final bool edgeBanner;
+
+  @override
+  Widget build(BuildContext context) {
+    // Bare NavPrefs reads no Hive box and returns the default dock (no
+    // Downloads) — the same guard the shell uses for widget tests.
+    final prefs = sl.isRegistered<NavPrefs>() ? sl<NavPrefs>() : NavPrefs();
+    return ListenableBuilder(
+      listenable: prefs,
+      builder: (context, _) => prefs.tabs.contains(DockTab.downloads)
+          ? const SizedBox.shrink()
+          : IconButton(
+              icon: DockIcon(
+                DockGlyph.download,
+                color: edgeBanner ? Colors.white : AppColors.textSecondary,
+                size: 22,
+              ),
+              tooltip: context.l10n.downloads,
+              style: edgeBanner ? _edgeHeaderButtonStyle() : null,
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const DownloadsScreen(),
+                ),
+              ),
+            ),
+    );
+  }
+}
+
+/// Opens [SearchScreen] — the Home header way in. Hidden while Search is a
+/// dock tab, so the bar and the header never offer it twice. Normally Search
+/// follows Z Mode; Home passes [fixedSourceId] when its Source Catalogue is
+/// selected so the query stays on that source.
 class HomeSearchAction extends StatelessWidget {
   const HomeSearchAction({
     super.key,
@@ -2186,19 +2223,27 @@ class HomeSearchAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      icon: DockIcon(
-        DockGlyph.search,
-        color: edgeBanner ? Colors.white : AppColors.textSecondary,
-        size: 22,
-      ),
-      tooltip: context.l10n.search,
-      style: edgeBanner ? _edgeHeaderButtonStyle() : null,
-      onPressed: () => Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => SearchScreen(fixedSourceId: fixedSourceId),
-        ),
-      ),
+    // Bare NavPrefs reads no Hive box and returns the default dock (no
+    // Search) — the same guard the shell uses for widget tests.
+    final prefs = sl.isRegistered<NavPrefs>() ? sl<NavPrefs>() : NavPrefs();
+    return ListenableBuilder(
+      listenable: prefs,
+      builder: (context, _) => prefs.tabs.contains(DockTab.search)
+          ? const SizedBox.shrink()
+          : IconButton(
+              icon: DockIcon(
+                DockGlyph.search,
+                color: edgeBanner ? Colors.white : AppColors.textSecondary,
+                size: 22,
+              ),
+              tooltip: context.l10n.search,
+              style: edgeBanner ? _edgeHeaderButtonStyle() : null,
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => SearchScreen(fixedSourceId: fixedSourceId),
+                ),
+              ),
+            ),
     );
   }
 }

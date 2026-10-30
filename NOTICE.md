@@ -84,6 +84,18 @@ Runtime-loaded profile teaser GIF (not bundled)
   Loaded from Custom Doodle when the profile screen is shown and cached on the
   device. The GIF is not included in the repository or app package.
 
+Runtime-loaded voice-search GIF (not bundled)
+  Source: https://media.tenor.com/EjowFmPUajMAAAAj/death-note-l-lawliet.gif
+  L Lawliet voice-search animation hosted by Tenor, fetched when phone voice
+  search opens and cached on the device. Not included in the repository or APK.
+
+Runtime-loaded Zoro voice-search GIF (not bundled)
+  Source: https://media1.tenor.com/m/9Y5b3kVpNzsAAAAC/zoro-baron-omatsuri.gif
+  Transparent redraw hosted at:
+  https://avatars.zangetsu.online/voice-search/zoro-hearing-bf88c2298404.gif
+  Fetched when selected for phone voice search and cached on the device.
+  Not included in the repository or app package.
+
 ────────────────────────────────────────────────────────────────────────────
 Keeping this file current
 ────────────────────────────────────────────────────────────────────────────
@@ -108,3 +120,8 @@ Lucide dock icons
   Six dock icons are rendered from Lucide SVGs with a 1.8 stroke.
   Licenses: ISC (Lucide) and MIT (Feather-derived icons).
   Full notices: assets/icons/lucide/LICENSE
+
+Local Authentication (Flutter)
+  https://pub.dev/packages/local_auth
+  License: BSD-3-Clause
+  Used for optional device-local profile unlock with biometrics.

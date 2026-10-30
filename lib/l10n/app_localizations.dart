@@ -783,6 +783,132 @@ abstract class AppLocalizations {
   /// **'Rich Presence — show your status'**
   String get discordSubtitle;
 
+  /// No description provided for @discordActivityStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Activity status'**
+  String get discordActivityStatus;
+
+  /// No description provided for @presenceOnline.
+  ///
+  /// In en, this message translates to:
+  /// **'Online'**
+  String get presenceOnline;
+
+  /// No description provided for @presenceIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Idle'**
+  String get presenceIdle;
+
+  /// No description provided for @presenceDnd.
+  ///
+  /// In en, this message translates to:
+  /// **'Do not disturb'**
+  String get presenceDnd;
+
+  /// No description provided for @presenceNameShows.
+  ///
+  /// In en, this message translates to:
+  /// **'Name shows'**
+  String get presenceNameShows;
+
+  /// No description provided for @presenceDetailsShows.
+  ///
+  /// In en, this message translates to:
+  /// **'Details show'**
+  String get presenceDetailsShows;
+
+  /// No description provided for @presenceStateShows.
+  ///
+  /// In en, this message translates to:
+  /// **'State shows'**
+  String get presenceStateShows;
+
+  /// No description provided for @presenceSourceApp.
+  ///
+  /// In en, this message translates to:
+  /// **'App name'**
+  String get presenceSourceApp;
+
+  /// No description provided for @presenceSourceTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Title'**
+  String get presenceSourceTitle;
+
+  /// No description provided for @presenceSourceEpisode.
+  ///
+  /// In en, this message translates to:
+  /// **'Episode'**
+  String get presenceSourceEpisode;
+
+  /// No description provided for @presenceLargeImage.
+  ///
+  /// In en, this message translates to:
+  /// **'Large image'**
+  String get presenceLargeImage;
+
+  /// No description provided for @presenceSmallImage.
+  ///
+  /// In en, this message translates to:
+  /// **'Small image'**
+  String get presenceSmallImage;
+
+  /// No description provided for @presenceImagePoster.
+  ///
+  /// In en, this message translates to:
+  /// **'Poster'**
+  String get presenceImagePoster;
+
+  /// No description provided for @presenceImageLogo.
+  ///
+  /// In en, this message translates to:
+  /// **'App logo'**
+  String get presenceImageLogo;
+
+  /// No description provided for @presenceImageOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Off'**
+  String get presenceImageOff;
+
+  /// No description provided for @presenceShowButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Open button'**
+  String get presenceShowButton;
+
+  /// No description provided for @presenceButtonLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Button label'**
+  String get presenceButtonLabel;
+
+  /// No description provided for @presenceButtonLabelHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Open in Zangetsu'**
+  String get presenceButtonLabelHint;
+
+  /// No description provided for @presenceShowWhenPaused.
+  ///
+  /// In en, this message translates to:
+  /// **'Show when paused'**
+  String get presenceShowWhenPaused;
+
+  /// No description provided for @presenceBrowsingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Show browsing title'**
+  String get presenceBrowsingTitle;
+
+  /// No description provided for @presencePreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview'**
+  String get presencePreview;
+
   /// No description provided for @watchParty.
   ///
   /// In en, this message translates to:
@@ -1316,6 +1442,78 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Profile'**
   String get profile;
+
+  /// No description provided for @profileLock.
+  ///
+  /// In en, this message translates to:
+  /// **'Profile lock'**
+  String get profileLock;
+
+  /// No description provided for @profileLockSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Ask for a PIN before opening this profile'**
+  String get profileLockSubtitle;
+
+  /// No description provided for @unlockProfile.
+  ///
+  /// In en, this message translates to:
+  /// **'Unlock profile'**
+  String get unlockProfile;
+
+  /// No description provided for @enterProfilePin.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the PIN for {name}'**
+  String enterProfilePin(Object name);
+
+  /// No description provided for @wrongPin.
+  ///
+  /// In en, this message translates to:
+  /// **'Wrong PIN, try again'**
+  String get wrongPin;
+
+  /// No description provided for @setProfilePin.
+  ///
+  /// In en, this message translates to:
+  /// **'Set profile PIN'**
+  String get setProfilePin;
+
+  /// No description provided for @confirmProfilePin.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm PIN'**
+  String get confirmProfilePin;
+
+  /// No description provided for @pinMismatch.
+  ///
+  /// In en, this message translates to:
+  /// **'PINs do not match'**
+  String get pinMismatch;
+
+  /// No description provided for @pinTooShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Use at least 4 characters'**
+  String get pinTooShort;
+
+  /// No description provided for @changeProfilePin.
+  ///
+  /// In en, this message translates to:
+  /// **'Change PIN'**
+  String get changeProfilePin;
+
+  /// No description provided for @removeProfileLock.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove lock'**
+  String get removeProfileLock;
+
+  /// No description provided for @useFingerprint.
+  ///
+  /// In en, this message translates to:
+  /// **'Use fingerprint'**
+  String get useFingerprint;
 
   /// No description provided for @changeProfile.
   ///
@@ -3009,6 +3207,60 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Voice search'**
   String get voiceSearch;
+
+  /// No description provided for @voiceSearchListening.
+  ///
+  /// In en, this message translates to:
+  /// **'Listening…'**
+  String get voiceSearchListening;
+
+  /// No description provided for @voiceSearchPreparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Getting ready…'**
+  String get voiceSearchPreparing;
+
+  /// No description provided for @voiceSearchProcessing.
+  ///
+  /// In en, this message translates to:
+  /// **'Finding the words…'**
+  String get voiceSearchProcessing;
+
+  /// No description provided for @voiceSearchPermission.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow microphone access to use voice search.'**
+  String get voiceSearchPermission;
+
+  /// No description provided for @voiceSearchSpeechPermission.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow speech recognition in Settings to use voice search.'**
+  String get voiceSearchSpeechPermission;
+
+  /// No description provided for @voiceSearchTypingAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'You can still type your search.'**
+  String get voiceSearchTypingAvailable;
+
+  /// No description provided for @voiceSearchServiceNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice recognition uses your device’s speech service.'**
+  String get voiceSearchServiceNotice;
+
+  /// No description provided for @voiceSearchFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice search failed. Please try again.'**
+  String get voiceSearchFailed;
+
+  /// No description provided for @voiceSearchNoMatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn’t hear a title. Please try speaking again.'**
+  String get voiceSearchNoMatch;
 
   /// No description provided for @allSources.
   ///

@@ -16,7 +16,7 @@ publish_to: "none" # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.3.3+19604
+version: 2.3.4+21630
 
 environment:
   sdk: ^3.11.5
@@ -149,11 +149,10 @@ dependencies:
   flutter_background_service: ^5.1.0
   # Local notifications for "new episode" alerts on subscribed shows.
   flutter_local_notifications: ^17.2.4
-  # Discord Rich Presence: Gateway WebSocket + secure token storage + a WebView
-  # for the Discord login (user-token capture).
+  # Discord Rich Presence: gateway WebSocket + secure storage for the
+  # retired user-token path (OAuth tokens live in Hive, like trackers).
   web_socket_channel: ^3.0.1
   flutter_secure_storage: ^10.3.1
-  webview_flutter: ^4.10.0
   # Capture the OAuth redirect (zangetsu://anilist-auth) back into the app for
   # AniList account linking.
   app_links: ^6.3.2
@@ -174,6 +173,7 @@ dependencies:
   firebase_messaging: ^16.4.3
   fluttertoast: ^10.0.0
   dynamic_color: ^2.1.0
+  local_auth: ^3.0.2
 dev_dependencies:
   # Test-only: gives the EPUB tests a REAL XML parse, which catches what a
   # hand-rolled tag-balance check cannot (an unescaped '&', a bad attribute)
@@ -276,6 +276,8 @@ flutter:
   generate: true
   uses-material-design: true
   assets:
+    - assets/licenses/adaptive_palette.txt
+    - assets/licenses/discord_social_sdk.txt
     - assets/icons/lucide/
     # Shared with Android's native network security configuration.
     - android/app/src/main/res/raw/trusted_roots.pem

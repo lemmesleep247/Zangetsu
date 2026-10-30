@@ -9,6 +9,7 @@ import 'package:fluttertoast/fluttertoast.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../search/browse_sources_screen.dart';
+import '../home/home_catalogue_prefs.dart';
 import '../../core/app_mode.dart';
 import '../../core/di/injector.dart';
 import '../../core/playback/my_list.dart';
@@ -17,6 +18,7 @@ import '../../core/playback/watch_history.dart';
 import '../../core/profiles/viewer_profile.dart';
 import '../../core/profiles/viewer_profile_avatar.dart';
 import '../../core/profiles/profile_shell_scope.dart';
+import '../../core/profiles/profile_lock_store.dart';
 import '../../core/reading/read_history.dart';
 import '../../core/mode/content_mode.dart';
 import '../../core/mode/content_mode_cubit.dart';
@@ -29,6 +31,7 @@ import '../../core/ui/nav_prefs.dart';
 import '../../core/ui/frosted_surface.dart';
 import '../downloads/downloads_screen.dart';
 import '../history/history_screen.dart';
+import '../profiles/profile_lock_gate.dart';
 import '../profiles/viewer_profiles_screen.dart';
 import '../profiles/viewer_profile_home_screen.dart';
 import '../auth/auth_cubit.dart';
@@ -47,17 +50,45 @@ import 'root_shell_tv.dart';
 ///
 /// [searchFocusSignal] is bumped each time the Search rail item is
 /// (re)selected on TV so the embedded search screen can auto-focus its
-/// field. Phone has no Search dock tab any more — Search moved to a Home
-/// header icon — so [RootShell] always passes null here.
+/// field. [RootShell] always passes null — a tapped Search dock tab just
+/// shows its page, and the Home header icon pushes a fresh one.
+///
+/// [searchFixedSourceId] pins the Search page to one source catalogue. TV
+/// leaves it null; the phone dock passes [dockSearchFixedSourceId].
 List<Widget> buildShellPages(
   ValueNotifier<int>? searchFocusSignal, {
   bool homeIsActive = true,
+  String? searchFixedSourceId,
 }) => [
   HomeScreen(isTabActive: homeIsActive),
-  SearchScreen(showBack: false, focusSignal: searchFocusSignal),
+  SearchScreen(
+    showBack: false,
+    focusSignal: searchFocusSignal,
+    fixedSourceId: searchFixedSourceId,
+  ),
   const MyListScreen(),
   const SettingsScreen(),
 ];
+
+/// What the phone dock's Search tab searches: the source catalogue Home is
+/// showing in the given mode (e.g. AniKoto), or null for metadata search —
+/// the same `fixedSourceId` the Home header icon passes.
+///
+/// Pure read of [HomeCataloguePrefs] so the mapping is unit-testable (pass
+/// [mode] explicitly); the shell passes nothing and the current cubit mode
+/// applies. The caller re-reads it on every rebuild (each tab switch), and
+/// [SearchScreen] recreates its bloc on scope change, so the tab follows
+/// catalogue picks with no extra plumbing.
+String? dockSearchFixedSourceId([ContentMode? mode]) {
+  if (!HomeCataloguePrefs.sourceSelected) return null;
+  final m =
+      mode ??
+      (sl.isRegistered<ContentModeCubit>()
+          ? sl<ContentModeCubit>().state
+          : null);
+  if (m == null) return HomeCataloguePrefs.sourceId;
+  return HomeCataloguePrefs.sourceIdFor(m);
+}
 
 /// App-level navigation shell — a reorderable dock (3-5 tabs, [NavPrefs])
 /// via a custom floating capsule (frosted, hovering over the content; no
@@ -289,16 +320,23 @@ class _RootShellState extends State<RootShell>
   /// One page per visible tab, in the same order the dock draws them, so the
   /// [IndexedStack] index is just the tab's position in that list.
   ///
-  /// Search is no longer a phone dock tab (it's a Home header icon now), so
-  /// this never places `shared[1]`. TV keeps its Settings rail destination.
+  /// Search is an opt-in dock tab that searches what Home is showing (source
+  /// catalogue or metadata) — [dockSearchFixedSourceId], re-read on every
+  /// rebuild so it follows catalogue picks. TV keeps its Settings rail
+  /// destination.
   List<Widget> _pagesFor(List<DockTab> tabs, String profileId) {
-    final shared = buildShellPages(null, homeIsActive: _tab == DockTab.home);
+    final shared = buildShellPages(
+      null,
+      homeIsActive: _tab == DockTab.home,
+      searchFixedSourceId: dockSearchFixedSourceId(),
+    );
     return [
       for (final t in tabs)
         KeyedSubtree(
           key: ValueKey('$profileId:${t.name}'),
           child: switch (t) {
             DockTab.home => shared[0],
+            DockTab.search => shared[1],
             DockTab.myList => shared[2],
             DockTab.profile => const ViewerProfileHomeScreen(),
             // Both normally get pushed with a back button; as tabs they own the
@@ -469,6 +507,7 @@ class _RootShellState extends State<RootShell>
                                 active: _tab,
                                 collapsed: collapsed && !_keepDockExpanded,
                                 glassTint: _navPrefs.glassTint,
+                                glassVisibility: _navPrefs.glassVisibility,
                                 glassQuality: _navPrefs.glassQuality,
                                 glassBlurEnabled: _navPrefs.glassBlurEnabled,
                                 onSelected: _onTabSelected,
@@ -525,6 +564,7 @@ class _LiquidNavDock extends StatelessWidget {
     required this.active,
     required this.collapsed,
     required this.glassTint,
+    required this.glassVisibility,
     required this.glassQuality,
     required this.glassBlurEnabled,
     required this.onSelected,
@@ -536,6 +576,7 @@ class _LiquidNavDock extends StatelessWidget {
   final DockTab active;
   final bool collapsed;
   final double glassTint;
+  final double glassVisibility;
   final GlassQuality glassQuality;
   final bool glassBlurEnabled;
   final ValueChanged<DockTab> onSelected;
@@ -585,11 +626,13 @@ class _LiquidNavDock extends StatelessWidget {
     final glass = liquidNavGlassSettings(
       glassTint,
       extraBlur: glassBlurEnabled,
+      glassVisibility: glassVisibility,
     );
-    final menuGlass = glass.copyWith(
-      glassColor: AppColors.settingsCard.withValues(alpha: 0.84),
-      blur: 8,
-    );
+    final menuGlass =
+        liquidNavGlassSettings(glassTint, extraBlur: glassBlurEnabled).copyWith(
+          glassColor: AppColors.settingsCard.withValues(alpha: 0.84),
+          blur: 8,
+        );
     final glassTabs = [
       for (final tab in tabs)
         GlassTab(
@@ -1153,7 +1196,20 @@ Future<void> _switchProfile(
   ViewerProfile profile,
 ) async {
   try {
-    await profiles.switchTo(profile.id);
+    if (!context.mounted) return;
+    final owner = profiles.ownerKey;
+    if (!await ensureProfileUnlocked(context, profile)) return;
+    if (!context.mounted || profiles.ownerKey != owner) return;
+    if (!profiles.profiles.any((p) => p.id == profile.id)) return;
+    final locks = sl.isRegistered<ProfileLockStore>()
+        ? sl<ProfileLockStore>()
+        : null;
+    if (profiles.activeId != profile.id) locks?.approveSwitch(profile.id);
+    try {
+      await profiles.switchTo(profile.id);
+    } finally {
+      locks?.consumeSwitchApproval(profile.id);
+    }
   } catch (_) {
     if (context.mounted) {
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(

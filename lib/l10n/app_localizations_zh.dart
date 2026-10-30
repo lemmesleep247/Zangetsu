@@ -347,6 +347,69 @@ class AppLocalizationsZh extends AppLocalizations {
   String get discordSubtitle => 'Rich Presence — 显示正在观看';
 
   @override
+  String get discordActivityStatus => 'Activity status';
+
+  @override
+  String get presenceOnline => 'Online';
+
+  @override
+  String get presenceIdle => 'Idle';
+
+  @override
+  String get presenceDnd => 'Do not disturb';
+
+  @override
+  String get presenceNameShows => 'Name shows';
+
+  @override
+  String get presenceDetailsShows => 'Details show';
+
+  @override
+  String get presenceStateShows => 'State shows';
+
+  @override
+  String get presenceSourceApp => 'App name';
+
+  @override
+  String get presenceSourceTitle => 'Title';
+
+  @override
+  String get presenceSourceEpisode => 'Episode';
+
+  @override
+  String get presenceLargeImage => 'Large image';
+
+  @override
+  String get presenceSmallImage => 'Small image';
+
+  @override
+  String get presenceImagePoster => 'Poster';
+
+  @override
+  String get presenceImageLogo => 'App logo';
+
+  @override
+  String get presenceImageOff => 'Off';
+
+  @override
+  String get presenceShowButton => 'Open button';
+
+  @override
+  String get presenceButtonLabel => 'Button label';
+
+  @override
+  String get presenceButtonLabelHint => 'Open in Zangetsu';
+
+  @override
+  String get presenceShowWhenPaused => 'Show when paused';
+
+  @override
+  String get presenceBrowsingTitle => 'Show browsing title';
+
+  @override
+  String get presencePreview => 'Preview';
+
+  @override
   String get watchParty => '一起看';
 
   @override
@@ -622,6 +685,44 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get profile => '个人资料';
+
+  @override
+  String get profileLock => 'Profile lock';
+
+  @override
+  String get profileLockSubtitle => 'Ask for a PIN before opening this profile';
+
+  @override
+  String get unlockProfile => 'Unlock profile';
+
+  @override
+  String enterProfilePin(Object name) {
+    return 'Enter the PIN for $name';
+  }
+
+  @override
+  String get wrongPin => 'Wrong PIN, try again';
+
+  @override
+  String get setProfilePin => 'Set profile PIN';
+
+  @override
+  String get confirmProfilePin => 'Confirm PIN';
+
+  @override
+  String get pinMismatch => 'PINs do not match';
+
+  @override
+  String get pinTooShort => 'Use at least 4 characters';
+
+  @override
+  String get changeProfilePin => 'Change PIN';
+
+  @override
+  String get removeProfileLock => 'Remove lock';
+
+  @override
+  String get useFingerprint => 'Use fingerprint';
 
   @override
   String get changeProfile => '切换个人资料？';
@@ -1520,6 +1621,37 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get voiceSearch => '语音搜索';
+
+  @override
+  String get voiceSearchListening => 'Listening…';
+
+  @override
+  String get voiceSearchPreparing => 'Getting ready…';
+
+  @override
+  String get voiceSearchProcessing => 'Finding the words…';
+
+  @override
+  String get voiceSearchPermission =>
+      'Allow microphone access to use voice search.';
+
+  @override
+  String get voiceSearchSpeechPermission =>
+      'Allow speech recognition in Settings to use voice search.';
+
+  @override
+  String get voiceSearchTypingAvailable => 'You can still type your search.';
+
+  @override
+  String get voiceSearchServiceNotice =>
+      'Voice recognition uses your device’s speech service.';
+
+  @override
+  String get voiceSearchFailed => 'Voice search failed. Please try again.';
+
+  @override
+  String get voiceSearchNoMatch =>
+      'Couldn’t hear a title. Please try speaking again.';
 
   @override
   String get allSources => '全部来源';

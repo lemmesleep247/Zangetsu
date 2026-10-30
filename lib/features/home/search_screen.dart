@@ -2,9 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../search/meta_filter_sheet.dart';
+import 'phone_voice_search_sheet.dart';
+import 'voice_search_artwork.dart';
 import '../../core/ui/app_toast.dart';
 import '../../core/zmode/zmode_module.dart';
 import '../../core/zmode/zmode_ids.dart';
@@ -142,7 +145,9 @@ class _SearchScreenState extends State<SearchScreen> {
 
   /// The bloc caches results and its source list, so a scope change has to
   /// build a NEW bloc rather than swap the repo underneath the old one. The
-  /// ValueKey below is what makes BlocProvider dispose and recreate it.
+  /// ValueKey below is what makes BlocProvider dispose and recreate it —
+  /// keyed on the pinned source too, so switching from source A to B
+  /// rebuilds as well: same scope, different answers.
   CatalogueRepository _repoForScope(SearchScope scope) => switch (scope) {
     SearchScope.library => sl<MetadataRepository>(),
     SearchScope.sources => sl<SourceRepository>(),
@@ -150,7 +155,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _searchTree(SearchScope scope) {
     return BlocProvider(
-      key: ValueKey(scope),
+      key: ValueKey((scope, widget.fixedSourceId)),
       create: (_) {
         final bloc = SearchBloc(
           repo: _repoForScope(scope),
@@ -261,6 +266,17 @@ class _SearchViewState extends State<_SearchView>
   late final TextEditingController _controller;
   final _focusNode = FocusNode();
 
+  static const _voiceChannel = MethodChannel('zangetsu/phone_voice_search');
+  static final _voiceArtwork = VoiceSearchArtwork();
+
+  /// Hidden until Android reports a recogniser, so non-Android and boxes
+  /// without one keep their unchanged search bar.
+  bool _voiceAvailable = false;
+  bool _voiceListening = false;
+
+  /// Invalidates a late recognition result on dispose or a newer request.
+  int _voiceRequest = 0;
+
   /// The repository this view describes and acts on — `displayName`,
   /// `loadedSources`, `detail`, `episodes`, `sources` all need to agree with
   /// whatever [SearchBloc] is actually querying. In Sources scope that's
@@ -313,24 +329,87 @@ class _SearchViewState extends State<_SearchView>
     if (!(widget.initialFilters ?? const MetaFilters()).isEmpty) {
       _applyMetaFilters();
     }
+    _checkVoice();
   }
 
   /// Focus the field when the Search tab is (re)selected so the keyboard is
   /// ready. Defers a frame so it runs after the IndexedStack reveals the tab.
   void _onFocusSignal() {
-    if (!mounted) return;
+    if (!mounted || _voiceListening) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _focusNode.requestFocus();
+      if (mounted && !_voiceListening) _focusNode.requestFocus();
     });
   }
 
   @override
   void dispose() {
+    _voiceRequest++;
     widget.focusSignal?.removeListener(_onFocusSignal);
     _controller.dispose();
     _focusNode.dispose();
     _ecoTabController?.dispose();
     super.dispose();
+  }
+
+  Future<void> _checkVoice() async {
+    try {
+      final ok = await _voiceChannel.invokeMethod<bool>('isAvailable') ?? false;
+      if (mounted && ok) setState(() => _voiceAvailable = true);
+    } catch (_) {
+      // No native handler / not Android → leave the mic hidden.
+    }
+  }
+
+  /// The signed-in owner and active profile a result belongs to. Recognition
+  /// opens a system dialog, and the screen can outlive a profile switch.
+  String? _voiceContext() {
+    if (!sl.isRegistered<ViewerProfileStore>()) return null;
+    final profiles = sl<ViewerProfileStore>();
+    return '${profiles.ownerKey}/${profiles.activeId}';
+  }
+
+  /// Opens the phone voice sheet; on a recognised phrase, fills the field
+  /// and runs the normal search. Partial results are never submitted.
+  Future<void> _startVoice() async {
+    if (_voiceListening) return;
+    final request = ++_voiceRequest;
+    final contextKey = _voiceContext();
+    setState(() => _voiceListening = true);
+    _focusNode.canRequestFocus = false;
+    _focusNode.unfocus();
+    try {
+      final text = await showPhoneVoiceSearchSheet(
+        context,
+        gifUrl: _voiceArtwork.next(),
+      );
+      final query = text?.trim() ?? '';
+      if (!mounted || request != _voiceRequest || query.isEmpty) return;
+      if (_voiceContext() != contextKey) return;
+      _controller.value = TextEditingValue(
+        text: query,
+        selection: TextSelection.collapsed(offset: query.length),
+      );
+      context.read<SearchBloc>().add(SearchRunRequested(query));
+    } catch (error) {
+      if (!mounted ||
+          request != _voiceRequest ||
+          _voiceContext() != contextKey) {
+        return;
+      }
+      if (ModalRoute.of(context)?.isCurrent == false) return;
+      showAppToast(
+        context,
+        error is PlatformException && error.code == 'voice_no_match'
+            ? context.l10n.voiceSearchNoMatch
+            : context.l10n.voiceSearchFailed,
+      );
+    } finally {
+      if (mounted && request == _voiceRequest) {
+        _focusNode.unfocus();
+        _focusNode.canRequestFocus = true;
+        setState(() => _voiceListening = false);
+      }
+    }
   }
 
   // ── Query helpers ─────────────────────────────────────────────────────────
@@ -833,7 +912,9 @@ class _SearchViewState extends State<_SearchView>
                       ),
                       cursorColor: AppColors.accent,
                       decoration: InputDecoration(
-                        hintText: _searchHint(),
+                        hintText: _voiceListening
+                            ? context.l10n.voiceSearchListening
+                            : _searchHint(),
                         hintStyle: AppText.body,
                         border: InputBorder.none,
                         isDense: true,
@@ -845,16 +926,43 @@ class _SearchViewState extends State<_SearchView>
                       ),
                     ),
                   ),
+                  // Voice search: only when Android has a recogniser. Sits in
+                  // the clear slot's row so the field and filters keep their
+                  // width on narrow screens.
+                  if (_voiceAvailable)
+                    ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _controller,
+                      builder: (context, value, _) => IconButton(
+                        key: const ValueKey('phone-search-voice'),
+                        icon: Transform.translate(
+                          offset: Offset(value.text.isEmpty ? 0 : 14, 0),
+                          child: Icon(
+                            Icons.mic_none_rounded,
+                            size: 18,
+                            color: _voiceListening
+                                ? AppColors.accent
+                                : AppColors.textTertiary,
+                          ),
+                        ),
+                        tooltip: _voiceListening
+                            ? context.l10n.voiceSearchListening
+                            : context.l10n.voiceSearch,
+                        onPressed: _voiceListening ? null : _startVoice,
+                      ),
+                    ),
                   // Clear button (only when there's text).
                   ValueListenableBuilder<TextEditingValue>(
                     valueListenable: _controller,
                     builder: (context, value, _) => value.text.isEmpty
                         ? const SizedBox.shrink()
                         : IconButton(
-                            icon: const Icon(
-                              Icons.close_rounded,
-                              size: 18,
-                              color: AppColors.textTertiary,
+                            icon: Transform.translate(
+                              offset: Offset(_voiceAvailable ? -2 : 0, 0),
+                              child: const Icon(
+                                Icons.close_rounded,
+                                size: 18,
+                                color: AppColors.textTertiary,
+                              ),
                             ),
                             tooltip: context.l10n.clear,
                             onPressed: _clear,
@@ -865,7 +973,7 @@ class _SearchViewState extends State<_SearchView>
                             ),
                           ),
                   ),
-                  const SizedBox(width: 8),
+                  SizedBox(width: _voiceAvailable ? 0 : 8),
                 ],
               ),
             ),
