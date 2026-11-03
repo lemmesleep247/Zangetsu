@@ -832,6 +832,45 @@ void main() {
     final hive = ViewerProfile.fromJson({'id': 'x', 'name': 'X'});
     expect(hive.photoUrl, isNull);
   });
+
+  test(
+    'local startup keeps the saved active profile when cloud hangs',
+    () async {
+      final box = Hive.box(ViewerProfileStore.boxName);
+      await box.put('profiles:startup-user', [
+        const ViewerProfile(id: kDefaultProfileId, name: 'Main').toJson(),
+        const ViewerProfile(id: 'saved-profile', name: 'Saved').toJson(),
+      ]);
+      await box.put('active:startup-user', 'saved-profile');
+      final cached = ViewerProfileStore(
+        remote: _HangingProfileRemote(),
+        currentUserId: () => 'startup-user',
+      );
+
+      await cached.loadForUser(attemptRemote: false);
+
+      expect(cached.isLoadedForCurrentUser, isTrue);
+      expect(cached.activeId, 'saved-profile');
+      expect(cached.activeProfile.name, 'Saved');
+      expect(cached.profiles, hasLength(2));
+    },
+  );
+
+  test(
+    'attemptRemote false applies local profiles without waiting on the network',
+    () async {
+      String? owner = 'account-offline';
+      final offline = ViewerProfileStore(
+        remote: _HangingProfileRemote(),
+        currentUserId: () => owner,
+      );
+      final sw = Stopwatch()..start();
+      await offline.loadForUser(displayName: 'Account', attemptRemote: false);
+      expect(sw.elapsed, lessThan(const Duration(seconds: 5)));
+      expect(offline.isLoadedForCurrentUser, isTrue);
+      expect(offline.activeProfile.name, 'Account');
+    },
+  );
 }
 
 class _BlockingDeleteProfileRemote implements ViewerProfileRemote {
@@ -909,6 +948,20 @@ class _FailingDeleteProfileRemote implements ViewerProfileRemote {
 
   @override
   Future<void> upsert(String userId, ViewerProfile profile) async {}
+}
+
+class _HangingProfileRemote implements ViewerProfileRemote {
+  @override
+  Future<List<Map<String, dynamic>>> listFor(String userId) =>
+      Completer<List<Map<String, dynamic>>>().future;
+
+  @override
+  Future<void> delete(String userId, String profileId) =>
+      Completer<void>().future;
+
+  @override
+  Future<void> upsert(String userId, ViewerProfile profile) =>
+      Completer<void>().future;
 }
 
 class _AccountSwitchProfileRemote implements ViewerProfileRemote {

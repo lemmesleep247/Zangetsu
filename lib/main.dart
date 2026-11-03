@@ -15,6 +15,7 @@ import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import 'core/analytics/analytics.dart';
 import 'core/app_config.dart';
 import 'core/app_mode.dart';
+import 'core/boot_network.dart';
 import 'core/di/injector.dart';
 import 'core/ui/splash_style.dart';
 import 'core/hive/safe_box.dart';
@@ -136,14 +137,26 @@ Future<void> main() async {
       // boot always proceeds; cloud features degrade to local-only until the next
       // launch on a live network (SupabaseService.currentUserId tolerates an
       // uninitialized client).
+      // Probe once: on a blackholed network (Wi-Fi with no internet) every
+      // cloud stage below hangs until its multi-second timeout instead of
+      // failing fast, stacking ~40s of serial waiting before the shell shows.
+      // When the probe says offline, boot stays local-only; the retry loop,
+      // resume sync, and lock-status cache cover the reconnect.
+      final bootOffline = await probeBootOffline(
+        host: Uri.tryParse(Environment.vpsSyncUrl)?.host ?? '',
+      );
       var supabaseOk = false;
       try {
+        // initialize() sets the singleton's client synchronously and only
+        // then awaits session restore — a timeout still leaves a usable
+        // client behind (registrations below dereference it), so even a
+        // probed-offline boot runs it with a short fuse instead of skipping.
         await Supabase.initialize(
           url: Environment.supabaseUrl,
           anonKey: Environment.supabaseAnonKey,
           // TV auth uses QR pairing, not OAuth redirect deep links.
           authOptions: FlutterAuthClientOptions(detectSessionInUri: !appleTv),
-        ).timeout(const Duration(seconds: 8));
+        ).timeout(Duration(seconds: bootOffline ? 2 : 8));
         supabaseOk = true;
       } catch (e, st) {
         AppLogger.instance.logError(e, st);
@@ -183,7 +196,7 @@ Future<void> main() async {
       }
       // Dependency init happens inside the boot gate so the splash shows
       // immediately instead of a blank screen.
-      runApp(const WatchApp());
+      runApp(WatchApp(bootOffline: bootOffline));
     },
     (error, stack) {
       AppLogger.instance.logError(error, stack);
@@ -224,9 +237,18 @@ Future<void> _retrySupabaseInit() async {
     }
   }
   // Client is up now → refresh auth so the UI reflects the restored session.
+  // A boot that probed offline also skipped the profile cloud merge — run it
+  // now that the network is back.
   if (_supabaseReady() && sl.isRegistered<AuthCubit>()) {
     try {
       await sl<AuthCubit>().restore();
+    } catch (_) {}
+    try {
+      if (sl.isRegistered<ViewerProfileStore>()) {
+        await sl<ViewerProfileStore>().loadForUser(
+          displayName: sl<AuthCubit>().state.displayName,
+        );
+      }
     } catch (_) {}
   }
 }
@@ -236,7 +258,11 @@ Future<void> _retrySupabaseInit() async {
 /// so pushed routes (login, profile, …) can read them. Providing them below the
 /// Navigator would scope them out of any `Navigator.push`ed route.
 class WatchApp extends StatefulWidget {
-  const WatchApp({super.key});
+  const WatchApp({super.key, this.bootOffline = false});
+
+  /// True when the pre-runApp probe found no connectivity: boot stays
+  /// local-only instead of burning serial network timeouts on the splash.
+  final bool bootOffline;
 
   @override
   State<WatchApp> createState() => _WatchAppState();
@@ -283,6 +309,9 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
               }
             });
           }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) unawaited(_syncBootCloud());
+          });
           if (!_handledLaunchTaps) {
             _handledLaunchTaps = true;
             WidgetsBinding.instance.addPostFrameCallback(
@@ -508,7 +537,14 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
   /// the splash for a minimum so the intro animation reads even on fast boots.
   Future<void> _run() async {
     final start = DateTime.now();
-    await initDependencies();
+    // Boot-gate offline hint expires after a couple of minutes: the launch
+    // lock check happens seconds after boot, while later checks (profile
+    // switches) are user-initiated and should see remote lock changes.
+    final offlineUntil = start.add(const Duration(minutes: 2));
+    await initDependencies(
+      isOffline: () =>
+          widget.bootOffline && DateTime.now().isBefore(offlineUntil),
+    );
     if (mounted) {
       setState(() => _depsReady = true);
       if (_bootReady) {
@@ -526,59 +562,20 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
         '===== session started · v${info.version} (build ${info.buildNumber}) =====',
       );
     } catch (_) {}
-    // Restore a persisted Appwrite session (bounded so a slow network can't
-    // trap the splash). If signed in, pull the cloud library into the local
-    // cache before Home warms so Continue Watching + My List are populated.
+    // Restore cached identity and profiles before mounting the profile/PIN gate.
+    // Remote profile and library requests run after the splash is dismissed.
     try {
       await sl<AuthCubit>().restore().timeout(const Duration(seconds: 5));
-      if (sl<AuthCubit>().state.isLoggedIn) {
-        // Bounded: local profiles apply immediately inside loadForUser; the
-        // cloud merge must never trap the splash on a dead network.
-        await sl<ViewerProfileStore>()
-            .loadForUser(displayName: sl<AuthCubit>().state.displayName)
-            .timeout(const Duration(seconds: 15));
-        Future<void> cloudSync() async {
-          await Future.wait([
-            sl<MyListStore>().seedCloudIfNeeded(),
-            sl<WatchHistory>().seedCloudIfNeeded(),
-            sl<ReadHistory>().seedCloudIfNeeded(),
-          ]).timeout(const Duration(seconds: 8));
-          await Future.wait([
-            sl<MyListStore>().pullFromCloudIfStale(maxAge: _syncFreshness),
-            sl<WatchHistory>().pullFromCloudIfStale(maxAge: _syncFreshness),
-            sl<ReadHistory>().pullFromCloudIfStale(maxAge: _syncFreshness),
-            sl<CategoryStore>().pullFromCloudIfStale(maxAge: _syncFreshness),
-          ]).timeout(const Duration(seconds: 6));
-          unawaited(
-            Future.wait([
-              sl<MyListStore>().retryPending(),
-              sl<WatchHistory>().retryPending(),
-              sl<ReadHistory>().retryPending(),
-            ]),
-          );
-        }
-
-        // tvOS: never block the splash on cloud I/O — sync after the shell is up.
-        if (isAppleTv) {
-          unawaited(cloudSync().catchError((_) {}));
-        } else {
-          await cloudSync();
-        }
-      }
     } catch (_) {}
-    if (!sl<ViewerProfileStore>().isLoadedForCurrentUser) {
-      try {
-        await sl<ViewerProfileStore>()
-            .loadForUser(displayName: sl<AuthCubit>().state.displayName)
-            .timeout(const Duration(seconds: 15));
-      } catch (_) {}
-    }
+    await sl<ViewerProfileStore>().loadForUser(
+      displayName: sl<AuthCubit>().state.displayName,
+      attemptRemote: false,
+    );
     // Rows saved under a source before the browse screen started resolving
-    // titles to the catalogue: move them onto the show they belong to so
-    // Continue Watching stops listing the same title twice. Once, after the
-    // cloud pull so rows from another device are covered, and unawaited so it
-    // never sits in front of the splash.
-    if (sl.isRegistered<MatchStore>()) {
+    // titles to the catalogue: move them onto the show they belong to.
+    // Online startup does this after cloud sync so imported rows are covered.
+    if ((widget.bootOffline || !sl<AuthCubit>().state.isLoggedIn) &&
+        sl.isRegistered<MatchStore>()) {
       unawaited(
         HistoryCanonicalMerge.runOnce(
           history: sl<WatchHistory>(),
@@ -614,9 +611,58 @@ class _WatchAppState extends State<WatchApp> with WidgetsBindingObserver {
     if (elapsed < minSplash) await Future.delayed(minSplash - elapsed);
   }
 
+  /// Refresh cloud data after local startup has released the splash.
+  Future<void> _syncBootCloud() async {
+    if (widget.bootOffline || !mounted) return;
+    final auth = sl<AuthCubit>();
+    final userId = auth.state.user?.id;
+    if (!auth.state.isLoggedIn || userId == null) return;
+    bool isCurrentUser() => mounted && auth.state.user?.id == userId;
+    try {
+      await sl<ViewerProfileStore>()
+          .loadForUser(displayName: auth.state.displayName)
+          .timeout(const Duration(seconds: 15));
+      if (!isCurrentUser()) return;
+      final profileId = sl<ViewerProfileStore>().activeId;
+      await Future.wait([
+        sl<MyListStore>().seedCloudIfNeeded(),
+        sl<WatchHistory>().seedCloudIfNeeded(),
+        sl<ReadHistory>().seedCloudIfNeeded(),
+      ]).timeout(const Duration(seconds: 8));
+      if (!isCurrentUser() || sl<ViewerProfileStore>().activeId != profileId) {
+        return;
+      }
+      await Future.wait([
+        sl<MyListStore>().pullFromCloudIfStale(maxAge: _syncFreshness),
+        sl<WatchHistory>().pullFromCloudIfStale(maxAge: _syncFreshness),
+        sl<ReadHistory>().pullFromCloudIfStale(maxAge: _syncFreshness),
+        sl<CategoryStore>().pullFromCloudIfStale(maxAge: _syncFreshness),
+      ]).timeout(const Duration(seconds: 6));
+      if (!isCurrentUser() || sl<ViewerProfileStore>().activeId != profileId) {
+        return;
+      }
+      await Future.wait([
+        sl<MyListStore>().retryPending(),
+        sl<WatchHistory>().retryPending(),
+        sl<ReadHistory>().retryPending(),
+      ]);
+    } catch (error, stack) {
+      AppLogger.instance.logError(error, stack);
+    } finally {
+      if (isCurrentUser() && sl.isRegistered<MatchStore>()) {
+        unawaited(
+          HistoryCanonicalMerge.runOnce(
+            history: sl<WatchHistory>(),
+            resume: sl<ResumeStore>(),
+            matches: sl<MatchStore>(),
+          ),
+        );
+      }
+    }
+  }
+
   /// Cloud-sync the library on in-session auth changes: pull on login, wipe the
-  /// local cache on logout. Boot-time restore is handled in [_run] (before this
-  /// listener mounts, so no double pull).
+  /// local cache on logout. Boot-time restore uses [_run] and [_syncBootCloud].
   Future<void> _onAuthChange(BuildContext context, AuthState state) async {
     if (state.status == AuthStatus.authenticated) {
       await sl<ViewerProfileStore>().loadForUser(
