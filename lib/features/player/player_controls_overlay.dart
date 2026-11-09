@@ -89,13 +89,51 @@ class _ControlsOverlay extends StatelessWidget {
   /// Overflow panel that slides in from the RIGHT (like the episodes panel) —
   /// holds the occasional actions so the control bars stay clean.
   void _showMore(BuildContext context) {
+    showPlayerMorePanel(
+      context: context,
+      onInteract: onInteract,
+      decoderLabel: decoderLabel,
+      enhanceActive: enhanceActive,
+      onDecoder: onDecoder,
+      onEnhance: onEnhance,
+      onColorProfile: onColorProfile,
+      onScreenshot: onScreenshot,
+      sleepActive: sleepActive,
+      onSleep: onSleep,
+      onPip: onPip,
+    );
+  }
+
+  /// Shared overflow panel (decoder / enhance / colour / snapshot / sleep /
+  /// PiP). The fullscreen overlay and the portrait watch page open the same
+  /// panel so the occasional actions live in exactly one place.
+  static void showPlayerMorePanel({
+    required BuildContext context,
+    required VoidCallback onInteract,
+    required String decoderLabel,
+    required bool enhanceActive,
+    required VoidCallback onDecoder,
+    required VoidCallback onEnhance,
+    required VoidCallback onColorProfile,
+    required VoidCallback onScreenshot,
+    required bool sleepActive,
+    required VoidCallback onSleep,
+    required VoidCallback? onPip,
+    bool animatePortraitEntrance = false,
+  }) {
+    final portrait =
+        animatePortraitEntrance &&
+        MediaQuery.orientationOf(context) == Orientation.portrait;
+    final reduced = portrait && MediaQuery.disableAnimationsOf(context);
     onInteract();
     showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,
       barrierLabel: 'More',
       barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 240),
+      transitionDuration: reduced
+          ? Duration.zero
+          : const Duration(milliseconds: 240),
       pageBuilder: (ctx, _, _) {
         // Same width and surface as the episodes panel — this slides in from
         // the same edge with the same motion, so looking different was just
@@ -193,7 +231,7 @@ class _ControlsOverlay extends StatelessWidget {
                           label: ctx.l10n.pictureInPicture,
                           onTap: () {
                             Navigator.pop(ctx);
-                            onPip!();
+                            onPip();
                           },
                         ),
                     ],
@@ -204,13 +242,35 @@ class _ControlsOverlay extends StatelessWidget {
           ),
         );
       },
-      transitionBuilder: (ctx, anim, _, child) => SlideTransition(
-        position: Tween(
-          begin: const Offset(1, 0),
-          end: Offset.zero,
-        ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
-        child: child,
-      ),
+      transitionBuilder: (ctx, anim, _, child) => portrait
+          ? (reduced
+                ? child
+                : FadeTransition(
+                    opacity: CurvedAnimation(
+                      parent: anim,
+                      curve: Curves.easeOut,
+                    ),
+                    child: SlideTransition(
+                      position:
+                          Tween(
+                            begin: const Offset(0, .03),
+                            end: Offset.zero,
+                          ).animate(
+                            CurvedAnimation(
+                              parent: anim,
+                              curve: Curves.easeOutCubic,
+                            ),
+                          ),
+                      child: child,
+                    ),
+                  ))
+          : SlideTransition(
+              position: Tween(begin: const Offset(1, 0), end: Offset.zero)
+                  .animate(
+                    CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
+                  ),
+              child: child,
+            ),
     );
   }
 
@@ -689,6 +749,7 @@ class _ControlsOverlay extends StatelessWidget {
                     // Duration tracker (off-screen listener via StreamBuilder).
                     StreamBuilder<Duration>(
                       stream: c.player.stream.duration,
+                      initialData: c.player.state.duration,
                       builder: (context, snap) {
                         final d = snap.data ?? duration;
                         WidgetsBinding.instance.addPostFrameCallback((_) {

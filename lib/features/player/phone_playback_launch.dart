@@ -4,6 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/di/injector.dart';
+import '../../core/download/download_manager.dart';
+import '../../core/download/download_record.dart';
+import '../downloads/episode_download_source_sheet.dart'
+    show matchDownloadEpisode, resolveEpisodeDownloadShowId;
+import '../../core/repository/catalogue_repository.dart';
 import '../../core/discord/discord_rpc.dart';
 import '../../core/discord/discord_presence.dart';
 import '../../core/share/share_link.dart';
@@ -11,6 +16,7 @@ import '../../core/models/provider_info.dart';
 import '../../core/models/episode.dart';
 import '../../core/models/video_source.dart';
 import '../../core/playback/playback_prefs.dart';
+import '../../core/playback/title_prefs.dart';
 import '../../core/playback/resume_store.dart';
 import '../../core/playback/source_selection.dart';
 import '../../core/playback/subtitle_encode_skew.dart';
@@ -19,8 +25,94 @@ import '../../core/playback/tv_track_helpers.dart';
 import '../../core/playback/watch_history.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/tracker/tracker_hub.dart';
+import '../../core/tracker/simkl_playback_session.dart';
 import 'subtitle_font_service.dart';
+import 'player_controls_config.dart';
 import 'subtitle_style.dart';
+import 'watch_page_info.dart';
+import '../detail/cubit/detail_cubit.dart' show seasonOf;
+
+/// Rejects stale sessions and malformed writes before touching saved controls.
+PlayerControlsConfig? phoneControlLayoutForSave(
+  Map<String, dynamic>? args, {
+  required int sessionId,
+  required bool playerOpen,
+}) {
+  if (!playerOpen || args?['sessionId'] != sessionId) return null;
+  List<String>? read(String key) {
+    final value = args?[key];
+    if (value is! List || value.any((item) => item is! String)) return null;
+    return value.cast<String>();
+  }
+
+  final top = read('top');
+  final left = read('left');
+  final right = read('right');
+  if (top == null || left == null || right == null) return null;
+  return PlayerControlsConfig(top: top, left: left, right: right).sanitised();
+}
+
+/// Display-only rows retain the original index used by native episode taps.
+Map<String, dynamic> phoneWatchPageData({
+  required List<Episode> episodes,
+  String? showTitle,
+  String? showDescription,
+  String? cover,
+  bool Function(Episode)? isWatched,
+  bool isMovie = false,
+}) {
+  final rows = watchPageEpisodes(
+    episodes: episodes,
+    currentIndex: -1,
+    isMovie: isMovie,
+    showTitle: showTitle,
+    coverFallback: cover,
+    isWatched: isWatched,
+  );
+  return {
+    'isMovie': isMovie,
+    'episodes': rows.map((row) {
+      final ep = episodes[row.index];
+      final header = resolveWatchPageHeader(
+        episode: ep,
+        showTitle: showTitle,
+        showDescription: showDescription,
+        isMovie: isMovie,
+      );
+      return <String, dynamic>{
+        'index': row.index,
+        'watched': row.watched,
+        'heading': row.heading,
+        'label': row.label,
+        'thumb': row.thumb,
+        'meta': row.meta,
+        'synopsis': row.synopsis,
+        'number': row.number,
+        'season': seasonOf(ep),
+        'unavailable': row.unavailableReason,
+        'title': header.title,
+        'subtitle': header.subtitle,
+      };
+    }).toList(),
+  };
+}
+
+int? phoneWatchActionIndex(
+  Map<String, dynamic>? args, {
+  required int sessionId,
+  required int episodeCount,
+  required bool playerOpen,
+}) {
+  final index = args?['index'];
+  if (!playerOpen ||
+      args?['sessionId'] != sessionId ||
+      index is! int ||
+      index < 0 ||
+      index >= episodeCount) {
+    return null;
+  }
+  return index;
+}
 
 /// Container → MIME hint. A tokenised url carries no extension, so without an
 /// explicit MIME ExoPlayer builds the wrong MediaSource and never starts.
@@ -108,9 +200,19 @@ Map<String, dynamic> phonePlayerArgs({
   required bool keepScreenOn,
   required bool autoplayNext,
   required int seekSeconds,
+  bool isMovie = false,
+  bool megaSkip = true,
+  int megaSkipSeconds = 85,
   String? subtitleFontPath,
   String? cover,
   Map<String, String>? coverHeaders,
+  String playerOrientation = 'landscape',
+  Map<String, List<String>>? controlLayout,
+  Map<String, dynamic>? watchData,
+  String? showDescription,
+  List<String>? availableCategories,
+  String category = 'sub',
+  int sessionId = 0,
 }) {
   final mime = source == null ? null : phoneMimeFor(source);
   return <String, dynamic>{
@@ -127,6 +229,7 @@ Map<String, dynamic> phonePlayerArgs({
     'episodeLabel': episodeLabel,
     'episodeLabels': episodeLabels,
     'episodeCount': episodeLabels.length,
+    'isMovie': isMovie,
     'startIndex': startIndex,
     'accentColor': accentColor,
     'softwareDecoding': softwareDecoding,
@@ -136,6 +239,11 @@ Map<String, dynamic> phonePlayerArgs({
     'keepScreenOn': keepScreenOn,
     'autoplayNext': autoplayNext,
     'seekSeconds': seekSeconds,
+    'megaSkip': megaSkip,
+    'megaSkipSeconds': megaSkipSeconds.clamp(
+      PlaybackPrefs.megaSkipMin,
+      PlaybackPrefs.megaSkipMax,
+    ),
     'subtitleScale': subtitleScale,
     'subtitleFgColor': subtitleFgColor,
     'subtitleBgColor': subtitleBgColor,
@@ -145,6 +253,13 @@ Map<String, dynamic> phonePlayerArgs({
     'subtitleFontPath': ?subtitleFontPath,
     'cover': ?cover,
     'coverHeaders': coverHeaders ?? const <String, String>{},
+    'playerOrientation': playerOrientation,
+    'controlLayout': ?controlLayout,
+    'watchData': ?watchData,
+    'showDescription': ?showDescription,
+    'availableCategories': availableCategories ?? const <String>[],
+    'category': category,
+    'sessionId': sessionId,
   };
 }
 
@@ -157,6 +272,8 @@ Future<void> phoneScrobbleOnLaunch({
   bool tmdbIsTv = false,
   String? imdbId,
   bool peek = false,
+  bool auto = true,
+  bool simklLive = false,
 }) async {
   if (peek) return;
   final number = episode.number;
@@ -177,6 +294,8 @@ Future<void> phoneScrobbleOnLaunch({
       episode: number.toInt(),
       season: episode.season,
       seasonEpisode: seasonEpisodeOf(episodes, episode),
+      auto: auto,
+      simklLive: simklLive,
     ),
   );
 }
@@ -210,11 +329,14 @@ Future<bool> launchPhonePlayback({
   int resumePosition = 0,
   bool peek = false,
   String? showUrl,
+  String? downloadShowId,
+  bool allowDownloads = true,
   String? showTitle,
   String? cover,
   Map<String, String>? coverHeaders,
   String category = 'sub',
   List<String> availableCategories = const [],
+  String? showDescription,
   WatchHistory? history,
   VideoSource? initialSource,
   int? malId,
@@ -222,6 +344,7 @@ Future<bool> launchPhonePlayback({
   int? tmdbId,
   bool tmdbIsTv = false,
   String? imdbId,
+  bool isMovie = false,
 }) async {
   return PhoneNativePlayer.play(
     sourceId: sourceId,
@@ -233,11 +356,14 @@ Future<bool> launchPhonePlayback({
     resumePosition: resumePosition,
     peek: peek,
     showUrl: showUrl,
+    downloadShowId: downloadShowId,
+    allowDownloads: allowDownloads,
     showTitle: showTitle,
     cover: cover,
     coverHeaders: coverHeaders,
     category: category,
     availableCategories: availableCategories,
+    showDescription: showDescription,
     history: history,
     initialSource: initialSource,
     malId: malId,
@@ -245,6 +371,7 @@ Future<bool> launchPhonePlayback({
     tmdbId: tmdbId,
     tmdbIsTv: tmdbIsTv,
     imdbId: imdbId,
+    isMovie: isMovie,
   );
 }
 
@@ -265,6 +392,17 @@ class PhoneNativePlayer {
   static List<Episode> _episodes = const [];
   static String _sourceId = '';
   static String _showId = '';
+  static String? _downloadShowId;
+  static bool _allowDownloads = true;
+  static int _downloadToken = 0;
+  static ({
+    int token,
+    int index,
+    String category,
+    Episode episode,
+    List<VideoSource> sources,
+  })?
+  _downloadChoice;
   static String? _showUrl;
   static String _showTitle = '';
   static String? _cover;
@@ -275,6 +413,9 @@ class PhoneNativePlayer {
   static bool _tmdbIsTv = false;
   static String? _imdbId;
   static String _category = 'sub';
+  static List<String> _availableCategories = const [];
+  static int _sessionId = 0;
+  static String? _showDescription;
   static ResumeStore? _resume;
   static WatchHistory? _history;
   static bool _autoResume = true;
@@ -284,6 +425,9 @@ class PhoneNativePlayer {
   static int _resumeOverride = 0;
   static bool _seedUsed = false;
   static bool _scrobbled = false;
+  static SimklPlaybackSession? _simklPlayback;
+  static int _simklIndex = -1;
+  static bool _isMovie = false;
 
   /// Returns false when the Activity cannot be started; stream errors are
   /// shown inside the native player so the user can retry or leave.
@@ -298,11 +442,14 @@ class PhoneNativePlayer {
     int resumePosition = 0,
     bool peek = false,
     String? showUrl,
+    String? downloadShowId,
+    bool allowDownloads = true,
     String? showTitle,
     String? cover,
     Map<String, String>? coverHeaders,
     String category = 'sub',
     List<String> availableCategories = const [],
+    String? showDescription,
     WatchHistory? history,
     VideoSource? initialSource,
     int? malId,
@@ -310,6 +457,7 @@ class PhoneNativePlayer {
     int? tmdbId,
     bool tmdbIsTv = false,
     String? imdbId,
+    bool isMovie = false,
   }) async {
     if (startIndex < 0 || startIndex >= episodes.length) return false;
     _resolve = resolveSources;
@@ -319,6 +467,10 @@ class PhoneNativePlayer {
     _sourceId = sourceId;
     _showUrl = showUrl;
     _showId = showUrl ?? sourceId;
+    _downloadShowId = downloadShowId;
+    _allowDownloads = allowDownloads;
+    _downloadChoice = null;
+    _downloadToken++;
     _showTitle = showTitle ?? '';
     _cover = cover;
     _coverHeaders = coverHeaders;
@@ -328,6 +480,11 @@ class PhoneNativePlayer {
     _tmdbIsTv = tmdbIsTv;
     _imdbId = imdbId;
     _category = category;
+    _availableCategories = availableCategories;
+    _showDescription = showDescription;
+    _sessionId++;
+    _prefetchedEpisodes.clear();
+    _isMovie = isMovie;
     _resume = resume;
     _history = history;
     if (!_handlerBound) {
@@ -343,11 +500,15 @@ class PhoneNativePlayer {
     _resumeOverride = resumePosition;
     _seedUsed = false;
     _scrobbled = false;
+    _simklPlayback?.stop();
+    _simklPlayback = null;
+    _simklIndex = -1;
     final subFontPath = await _stageSubtitleFont(prefs.subtitleFont);
     final args = phonePlayerArgs(
       title: _showTitle,
       episodeLabel: _episodeLabel(ep),
       episodeLabels: [for (final e in _episodes) _episodeLabel(e)],
+      isMovie: _isMovie,
       startIndex: startIndex,
       accentColor: AppColors.accent.toARGB32(),
       softwareDecoding: prefs.videoDecoder == 'sw',
@@ -371,9 +532,43 @@ class PhoneNativePlayer {
       keepScreenOn: prefs.keepScreenOn,
       autoplayNext: prefs.autoplayNext,
       seekSeconds: prefs.seekSeconds,
+      megaSkip: prefs.megaSkip,
+      megaSkipSeconds: prefs.megaSkipSeconds,
       subtitleFontPath: subFontPath,
       cover: _cover,
       coverHeaders: _coverHeaders,
+      playerOrientation: prefs.playerOrientation,
+      controlLayout: {
+        'top': prefs.playerBarTop ?? PlayerControlsConfig.defaultTop,
+        'left': prefs.playerBarLeft ?? PlayerControlsConfig.defaultLeft,
+        'right': prefs.playerBarRight ?? PlayerControlsConfig.defaultRight,
+      },
+      watchData: {
+        ...phoneWatchPageData(
+          episodes: _episodes,
+          showTitle: _showTitle,
+          showDescription: _showDescription,
+          cover: _cover,
+          isWatched: (ep) =>
+              _resume?.get(_sourceId, _showId, ep.id)?.finished ?? false,
+          isMovie: _isMovie,
+        ),
+        'coverHeaders': _coverHeaders ?? const <String, String>{},
+        'canDownload':
+            _allowDownloads &&
+            (_showUrl?.isNotEmpty ?? false) &&
+            !_peek &&
+            sl.isRegistered<DownloadManager>() &&
+            !ep.url.startsWith('file:') &&
+            !ep.url.startsWith('content:'),
+        'surface': AppColors.surface2.toARGB32(),
+        'downloadSurface': AppColors.surface.toARGB32(),
+        'secondary': AppColors.textSecondary.toARGB32(),
+      },
+      showDescription: _showDescription,
+      availableCategories: _availableCategories,
+      category: _category,
+      sessionId: _sessionId,
     );
 
     _closed = Completer<Map<String, dynamic>?>();
@@ -382,8 +577,37 @@ class PhoneNativePlayer {
       _closed = null;
       return false;
     }
+    // Entries without a snapshot (anything but Details) enrich once, lazily:
+    // the show page is already up, and a changed show or a local file skips.
+    unawaited(_pushShowDescription(_sessionId));
     await _closed!.future;
     return true;
+  }
+
+  /// One lazy synopsis fetch per session, pushed to the live player only if
+  /// it is still the session that asked. Local files never trigger resolution.
+  static Future<void> _pushShowDescription(int session) async {
+    if ((_showDescription?.trim().isNotEmpty ?? false)) return;
+    final url = _showUrl;
+    if (url == null || url.isEmpty) return;
+    final seed = _seedSource?.url ?? '';
+    if (seed.startsWith('file://') || seed.startsWith('content://')) return;
+    try {
+      final desc =
+          (await sl<CatalogueRepository>().detail(
+            url,
+            sourceId: _sourceId,
+          )).description?.trim() ??
+          '';
+      if (desc.isEmpty || session != _sessionId) return;
+      _showDescription = desc;
+      await _ch.invokeMethod('updateMetadata', {
+        'sessionId': session,
+        'showDescription': desc,
+      });
+    } catch (_) {
+      // No synopsis is a hidden section, never a failed launch.
+    }
   }
 
   static Future<dynamic> _onNativeCall(MethodCall call) async {
@@ -414,9 +638,235 @@ class PhoneNativePlayer {
             tmdbId: _tmdbId,
             tmdbIsTv: _tmdbIsTv,
             imdbId: _imdbId,
+            simklLive: true,
           ),
         );
         return null;
+      case 'watchDownloadOptions':
+      case 'watchDownloadChoose':
+      case 'watchDownloadAction':
+        final args = _callArgs(call);
+        final index = phoneWatchActionIndex(
+          args,
+          sessionId: _sessionId,
+          episodeCount: _episodes.length,
+          playerOpen: _closed?.isCompleted == false && !_peek,
+        );
+        if (index == null ||
+            !_allowDownloads ||
+            (_showUrl?.isEmpty ?? true) ||
+            !sl.isRegistered<DownloadManager>()) {
+          return null;
+        }
+        final original = _episodes[index];
+        if (original.url.startsWith('file:') ||
+            original.url.startsWith('content:') ||
+            (original.unavailable?.isNotEmpty ?? false)) {
+          return null;
+        }
+        final manager = sl<DownloadManager>();
+        final downloadSession = _sessionId;
+        final requestToken = call.method == 'watchDownloadOptions'
+            ? ++_downloadToken
+            : null;
+        if (requestToken != null) _downloadChoice = null;
+        final downloadShowId = await resolveEpisodeDownloadShowId(
+          sourceId: _sourceId,
+          showUrl: _showUrl!,
+          knownId: _downloadShowId,
+          downloads: manager.all,
+          loadShowId: () async => (await sl<CatalogueRepository>().detail(
+            _showUrl!,
+            sourceId: _sourceId,
+          )).id,
+        );
+        if (downloadSession != _sessionId ||
+            _closed?.isCompleted != false ||
+            (requestToken != null && requestToken != _downloadToken)) {
+          return null;
+        }
+        _downloadShowId = downloadShowId;
+        final record = manager.recordFor(
+          _sourceId,
+          downloadShowId,
+          original.id,
+        );
+        final active =
+            record != null &&
+            {
+              DownloadStatus.downloading,
+              DownloadStatus.paused,
+              DownloadStatus.queued,
+              DownloadStatus.resolving,
+            }.contains(record.status);
+        if (call.method == 'watchDownloadAction') {
+          if (!active) return false;
+          switch (args?['action']) {
+            case 'pause':
+              await manager.pause(record);
+              return true;
+            case 'resume':
+              await manager.resume(record);
+              return true;
+            case 'cancel':
+              await manager.cancel(record);
+              return true;
+            default:
+              return false;
+          }
+        }
+        if (call.method == 'watchDownloadChoose') {
+          final choice = _downloadChoice;
+          final source = args?['source'];
+          if (active ||
+              choice == null ||
+              choice.index != index ||
+              args?['token'] != choice.token ||
+              source is! int ||
+              source < 0 ||
+              source >= choice.sources.length) {
+            return false;
+          }
+          _downloadChoice = null;
+          final selected = choice.sources[source];
+          await manager.enqueueSource(
+            sourceId: _sourceId,
+            showId: downloadShowId,
+            showTitle: _showTitle,
+            cover: _cover,
+            coverHeaders: _coverHeaders,
+            showUrl: _showUrl ?? _showId,
+            category: choice.category,
+            episode: choice.episode,
+            source: selected,
+            qualityLabel: selected.quality ?? 'auto',
+            fallbacks: choice.sources,
+            nowMs: DateTime.now().millisecondsSinceEpoch,
+            malId: _malId,
+          );
+          return true;
+        }
+        if (active) return {'status': record.status.name};
+        final requestedCategory = args?['category'];
+        if (requestedCategory != null && requestedCategory is! String) {
+          return null;
+        }
+        final category = requestedCategory as String? ?? _category;
+        if (category != _category && !_availableCategories.contains(category)) {
+          return null;
+        }
+        final session = _sessionId;
+        final token = requestToken!;
+        _downloadChoice = null;
+        Episode? episode = original;
+        final repo = sl<CatalogueRepository>();
+        if (category != _category) {
+          episode = matchDownloadEpisode(
+            original,
+            await repo.episodes(
+              _showUrl ?? _showId,
+              sourceId: _sourceId,
+              category: category,
+            ),
+          );
+        }
+        final sources = episode == null
+            ? <VideoSource>[]
+            : DownloadManager.sourcesForDownloadCategory(
+                await repo.sources(
+                  episode.url,
+                  sourceId: _sourceId,
+                  fast: false,
+                ),
+                category,
+              );
+        if (session != _sessionId ||
+            token != _downloadToken ||
+            _closed?.isCompleted != false) {
+          return null;
+        }
+        if (episode != null) {
+          _downloadChoice = (
+            token: token,
+            index: index,
+            category: category,
+            episode: episode,
+            sources: sources,
+          );
+        }
+        return {
+          'token': token,
+          'category': category,
+          'categories': _availableCategories,
+          'sources': [
+            for (var i = 0; i < sources.length; i++)
+              phoneSourceMap(sources[i], i),
+          ],
+        };
+      case 'watchEpisodeState':
+      case 'setWatchEpisodeWatched':
+      case 'watchEpisodeMirrors':
+        final args = _callArgs(call);
+        final index = phoneWatchActionIndex(
+          args,
+          sessionId: _sessionId,
+          episodeCount: _episodes.length,
+          playerOpen: _closed?.isCompleted == false && !_peek,
+        );
+        if (index == null) return null;
+        final session = _sessionId;
+        final ep = _episodes[index];
+        if (call.method == 'watchEpisodeState') {
+          return {
+            'watched':
+                _resume?.get(_sourceId, _showId, ep.id)?.finished ?? false,
+          };
+        }
+        if (call.method == 'setWatchEpisodeWatched') {
+          final watched = args?['watched'];
+          if (watched is! bool || _resume == null) return false;
+          await _resume!.setWatched(
+            _sourceId,
+            _showId,
+            ep.id,
+            watched: watched,
+          );
+          if (session != _sessionId || _closed?.isCompleted != false) {
+            return false;
+          }
+          if (watched) {
+            unawaited(
+              phoneScrobbleOnLaunch(
+                episode: ep,
+                episodes: _episodes,
+                malId: _malId,
+                scrobbleTitle: _scrobbleTitle ?? _showTitle,
+                tmdbId: _tmdbId,
+                tmdbIsTv: _tmdbIsTv,
+                imdbId: _imdbId,
+                auto: false,
+              ),
+            );
+          }
+          return true;
+        }
+        final sources = sl.isRegistered<CatalogueRepository>()
+            ? await sl<CatalogueRepository>().sources(
+                tvEpisodeUrl(ep.url, _category),
+                sourceId: _sourceId,
+                fast: false,
+              )
+            : await _resolveSources(ep);
+        final prepared = await _prepareSources(sources);
+        if (session != _sessionId || _closed?.isCompleted != false) return null;
+        return [
+          for (var i = 0; i < prepared.length; i++)
+            {
+              ...phoneSourceMap(prepared[i], i),
+              'positionMs': _autoResume ? _resumePosition(ep) : 0,
+              'episodeLabel': _episodeLabel(ep),
+            },
+        ];
       case 'sourcesFor':
         final args = _callArgs(call);
         final index = (args?['index'] as num?)?.toInt() ?? -1;
@@ -430,13 +880,74 @@ class PhoneNativePlayer {
           for (var i = 0; i < prepared.length; i++)
             phoneSourceMap(prepared[i], i),
         ];
+      case 'switchCategory':
+        {
+          // Native Audio menu's Sub/Dub row. Same episode, same list, Dart's
+          // normal resolution path — a failed resolve returns null and the
+          // player keeps playing instead of jumping anywhere.
+          final args = _callArgs(call);
+          final cat = args?['category'] as String?;
+          final index = (args?['index'] as num?)?.toInt() ?? -1;
+          if (cat == null ||
+              !_availableCategories.contains(cat) ||
+              index < 0 ||
+              index >= _episodes.length) {
+            return null;
+          }
+          final previous = _category;
+          _category = cat;
+          final payload = await _resolveEpisode(index);
+          if (payload == null) {
+            _category = previous;
+            return null;
+          }
+          payload['positionMs'] =
+              (args?['positionMs'] as num?)?.toInt() ?? payload['positionMs'];
+          return payload;
+        }
+      case 'setAutoplayNext':
+        {
+          final value = _callArgs(call)?['value'] as bool?;
+          if (value == null) return null;
+          await sl<PlaybackPrefs>().setAutoplayNext(value);
+          return null;
+        }
+      case 'saveControlLayout':
+        {
+          final layout = phoneControlLayoutForSave(
+            _callArgs(call),
+            sessionId: _sessionId,
+            playerOpen: _closed?.isCompleted == false,
+          );
+          if (layout == null) return false;
+          await sl<PlaybackPrefs>().setPlayerBar(
+            layout.top,
+            layout.left,
+            layout.right,
+          );
+          return true;
+        }
       case 'discordPresence':
-        _pushDiscordPresence(_callArgs(call));
+        final args = _callArgs(call);
+        _syncSimkl(args);
+        _pushDiscordPresence(args);
         return null;
       case 'saveProgress':
-        await _saveProgress(_callArgs(call), flush: true);
+        final args = _callArgs(call);
+        await _saveProgress(args, flush: true);
+        _preheatNearEnd(args);
         return null;
       case 'playerClosed':
+        final closingArgs = _callArgs(call);
+        if (closingArgs?['sessionId'] == _sessionId) {
+          _syncSimkl({
+            ...?closingArgs,
+            'index': closingArgs?['episodeIndex'],
+            'actualPlaying': false,
+            'completed': true,
+          });
+          _simklPlayback?.stop();
+        }
         if (!_peek &&
             _closed?.isCompleted == false &&
             sl.isRegistered<DiscordRpc>()) {
@@ -446,9 +957,47 @@ class PhoneNativePlayer {
         await _saveProgress(args, flush: true);
         if (_closed?.isCompleted == false) _closed!.complete(args);
         _closed = null;
+        _prefetchedEpisodes.clear();
+        _downloadChoice = null;
+        _downloadToken++;
         return null;
     }
     return null;
+  }
+
+  static void _syncSimkl(Map<String, dynamic>? args) {
+    if (_peek ||
+        _closed?.isCompleted != false ||
+        args?['sessionId'] != _sessionId ||
+        !sl.isRegistered<TrackerHub>()) {
+      return;
+    }
+    final index = (args?['index'] as num?)?.toInt() ?? -1;
+    if (index < 0 || index >= _episodes.length) return;
+    if (index != _simklIndex) {
+      _simklPlayback?.stop();
+      _simklPlayback = null;
+      _simklIndex = index;
+    }
+    final ep = _episodes[index];
+    final n = ep.number;
+    _simklPlayback ??= sl<TrackerHub>().simklPlayback(
+      malId: _malId,
+      tmdbId: _tmdbId,
+      tmdbIsTv: _tmdbIsTv,
+      imdbId: _imdbId,
+      episode: n != null && n.isFinite && n > 0 && n == n.truncateToDouble()
+          ? n.toInt()
+          : null,
+      season: ep.season,
+      seasonEpisode: seasonEpisodeOf(_episodes, ep),
+    );
+    _simklPlayback?.update(
+      positionMs: (args?['positionMs'] as num?)?.toInt() ?? 0,
+      durationMs: (args?['durationMs'] as num?)?.toInt() ?? 0,
+      playing: args?['actualPlaying'] == true,
+      completed: args?['completed'] == true,
+    );
   }
 
   static void _pushDiscordPresence(Map<String, dynamic>? args) {
@@ -502,6 +1051,8 @@ class PhoneNativePlayer {
   }
 
   static Future<Map<String, dynamic>?> _resolveEpisode(int index) async {
+    final session = _sessionId;
+    final category = _category;
     final ep = _episodes[index];
     final seed = !_seedUsed && _seedSource != null && index == _startIndex
         ? _seedSource
@@ -511,7 +1062,9 @@ class PhoneNativePlayer {
         ? await _resolveSources(ep)
         : <VideoSource>[seed];
     final prepared = await _prepareSources(sources);
-    if (prepared.isEmpty) return null;
+    if (session != _sessionId || category != _category || prepared.isEmpty) {
+      return null;
+    }
     final src = seed == null ? _pickSource(prepared) : prepared.first;
     if (src == null) return null;
     final position = index == _startIndex
@@ -529,7 +1082,37 @@ class PhoneNativePlayer {
   static VideoSource? _pickSource(List<VideoSource> sources) => pickDefault(
     sources,
     prefer: _category == 'dub' ? AudioKind.dub : AudioKind.sub,
+    preferQuality: _preferredQuality(),
   );
+
+  static String _preferredQuality() {
+    final url = _showUrl;
+    return (url != null && url.isNotEmpty && sl.isRegistered<TitlePrefsStore>()
+            ? sl<TitlePrefsStore>().quality(_sourceId, url)
+            : null) ??
+        sl<PlaybackPrefs>().defaultQuality;
+  }
+
+  static final _prefetchedEpisodes = <(int, String)>{};
+
+  static void _preheatNearEnd(Map<String, dynamic>? args) {
+    if (_peek || _closed?.isCompleted != false || args == null) return;
+    final index = (args['index'] as num?)?.toInt() ?? -1;
+    final position = (args['positionMs'] as num?)?.toInt() ?? 0;
+    final duration = (args['durationMs'] as num?)?.toInt() ?? 0;
+    if (index < 0 ||
+        index + 1 >= _episodes.length ||
+        duration <= 0 ||
+        position < duration * 0.85) {
+      return;
+    }
+    if (!_prefetchedEpisodes.add((index, _category))) return;
+    unawaited(
+      _resolveSources(
+        _episodes[index + 1],
+      ).catchError((_) => const <VideoSource>[]),
+    );
+  }
 
   static int _indexOfSource(List<VideoSource> sources, VideoSource target) {
     final index = sources.indexWhere((source) => source.url == target.url);
@@ -642,6 +1225,13 @@ class PhoneNativePlayer {
   }
 
   static String _episodeLabel(Episode ep) {
+    if (_isMovie) {
+      if (_episodes.length == 1 && _showTitle.trim().isNotEmpty) {
+        return _showTitle.trim();
+      }
+      final t = ep.title.trim();
+      return t.isNotEmpty ? t : _showTitle;
+    }
     final n = ep.number;
     final base = n == null ? '' : 'Episode ${n % 1 == 0 ? n.toInt() : n}';
     // Episode.title is non-nullable (episode.dart:31) but can be empty.

@@ -924,8 +924,7 @@ class _PlaybackSettingsScreenState extends State<PlaybackSettingsScreen> {
                   if (mounted) setState(() {});
                 },
               ),
-              // Default player orientation. TV is always landscape, so this
-              // row is phone-only.
+              // Orientation also controls the phone player's opening layout.
               if (!sl<AppMode>().isTv)
                 SettingsTile(
                   icon: Icons.screen_rotation,

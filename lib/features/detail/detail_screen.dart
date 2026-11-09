@@ -4,10 +4,12 @@ import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cue/cue.dart';
 import 'package:flutter/cupertino.dart' show CupertinoPicker;
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:video_player/video_player.dart' as preview;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:share_plus/share_plus.dart';
@@ -20,6 +22,7 @@ import '../../core/ui/detail_prefs.dart';
 import '../../core/ui/poster_palette.dart';
 import '../../core/ui/mobile_hero_art.dart';
 import '../../core/metadata/synopsis.dart';
+import '../../core/models/film.dart';
 import '../../core/mode/content_mode_cubit.dart';
 import '../../core/zmode/metadata_filters.dart';
 import '../../core/zmode/zmode_module.dart';
@@ -35,6 +38,8 @@ import '../../core/ui/episode_unavailable_dialog.dart';
 import '../../core/zmode/playback_resolver.dart';
 import 'episode_sources_sheet.dart';
 import '../downloads/downloads_screen.dart';
+import '../downloads/episode_download_icon.dart';
+import '../downloads/episode_download_source_sheet.dart';
 import '../auth/auth_cubit.dart';
 import 'epub_export_sheet.dart';
 import 'chapter_download_range_sheet.dart';
@@ -57,7 +62,6 @@ import '../../core/download/chapter_download.dart';
 import '../../core/download/chapter_download_store.dart';
 import '../../core/download/chapter_downloader.dart';
 import '../../core/download/download_manager.dart';
-import '../../core/download/download_record.dart';
 import '../../core/mode/content_mode.dart';
 import '../../core/models/episode.dart';
 import '../../core/models/episode_title.dart';
@@ -88,6 +92,7 @@ import '../../core/tracker/tracker.dart';
 import '../../core/tracker/tracker_binding_store.dart';
 import '../../core/tracker/tracker_hub.dart';
 import '../../core/playback/playback_prefs.dart';
+import '../player/mpv_player_pool.dart';
 import '../../core/playback/resume_store.dart';
 import '../../core/playback/title_prefs.dart';
 import '../../core/playback/watch_history.dart';
@@ -120,6 +125,7 @@ import '../../core/ui/badge.dart';
 import '../../core/ui/route_observer.dart';
 import '../../core/ui/states.dart';
 import '../player/player_screen.dart';
+import '../player/episode_player_route.dart';
 import '../player/tv_playback_launch.dart';
 import '../reader/manga_reader_screen.dart';
 import '../reader/novel_reader_screen.dart';
@@ -129,6 +135,7 @@ import 'wrong_title_sheet.dart';
 import '../../l10n/l10n.dart';
 
 part 'detail_hero.dart';
+part 'detail_native_trailer.dart';
 part 'detail_info.dart';
 part 'detail_episodes.dart';
 part 'detail_sheets.dart';
@@ -514,7 +521,6 @@ class _DetailViewState extends State<_DetailView>
   // hero swaps its static cover backdrop for an autoplaying, muted, looping
   // player (Netflix-style).
   Future<String?>? _trailerFuture;
-  String? _trailerId;
 
   /// Poster-tinted background colour for the adaptive wash (null → normal
   /// theme background). Extraction runs once per hero-art URL.
@@ -526,23 +532,14 @@ class _DetailViewState extends State<_DetailView>
   /// memory + Hive, so repeat opens don't pop.
   String? _logoUrl;
 
-  /// Kick off (once) the YouTube-id lookup for the resolved detail. When it
-  /// completes with a non-null id, store it in [_trailerId] and rebuild so the
-  /// hero can mount the trailer player.
+  /// Resolve once; only the hero listens for the result.
   void _resolveTrailer(MediaDetail detail) {
-    if (_trailerFuture != null) return;
-    _trailerFuture =
-        sl<TrailerService>().youtubeId(
-          title: detail.title,
-          englishTitle: detail.englishTitle,
-          type: detail.type,
-          year: detail.year,
-        )..then((id) {
-          if (!mounted) return;
-          if (id != null && id.isNotEmpty && id != _trailerId) {
-            setState(() => _trailerId = id);
-          }
-        });
+    _trailerFuture ??= sl<TrailerService>().youtubeId(
+      title: detail.title,
+      englishTitle: detail.englishTitle,
+      type: detail.type,
+      year: detail.year,
+    );
   }
 
   @override
@@ -551,6 +548,7 @@ class _DetailViewState extends State<_DetailView>
     _tint.addListener(_onTintChanged);
     ThemeController.revision.addListener(_onThemeRevision);
     _loadLogo();
+    _schedulePlayerWarmup();
     // Discord Rich Presence: "Looking at <title>" while this detail is open.
     if (sl.isRegistered<DiscordRpc>()) {
       sl<DiscordRpc>().setBrowsing(
@@ -558,6 +556,32 @@ class _DetailViewState extends State<_DetailView>
         posterUrl: widget.item.cover,
       );
     }
+  }
+
+  Timer? _playerWarmupTimer;
+  MpvPlayerPool? _playerWarmupPool;
+
+  void _schedulePlayerWarmup() {
+    if (!sl.isRegistered<MpvPlayerPool>() ||
+        sl<AppMode>().isTv ||
+        widget.item.type == ProviderType.manga ||
+        widget.item.type == ProviderType.novel) {
+      return;
+    }
+    // Do not construct a native core during the detail-page transition.
+    _playerWarmupTimer = Timer(_prefetchStayDelay, () {
+      if (!mounted) return;
+      final route = ModalRoute.of(context);
+      if (route?.isCurrent != true ||
+          (route?.animation != null &&
+              route!.animation!.status != AnimationStatus.completed)) {
+        return;
+      }
+      final prefs = sl<PlaybackPrefs>();
+      if (prefs.externalPlayerPackage.isNotEmpty) return;
+      _playerWarmupPool = sl<MpvPlayerPool>();
+      _playerWarmupPool!.warmUp(libass: prefs.styledSubtitles);
+    });
   }
 
   /// Repaint the pinned app bar in the new tint: it paints the same wash as the
@@ -614,6 +638,9 @@ class _DetailViewState extends State<_DetailView>
   @override
   void dispose() {
     _routeAnimation?.removeStatusListener(_onRouteStatusChanged);
+    _playerWarmupTimer?.cancel();
+    final prepared = _playerWarmupPool;
+    if (prepared != null) unawaited(prepared.clear());
     // Leaving before the stay-delay elapsed: no viewer is here to warm a menu
     // for, so the pending resolve never starts.
     _prefetchTimer?.cancel();
@@ -1490,7 +1517,7 @@ class _DetailViewState extends State<_DetailView>
 
     Navigator.of(context)
         .push(
-          MaterialPageRoute(
+          EpisodePlayerRoute(
             builder: (_) => PlayerScreen(
               playerOverride: playerOverride?.package,
               initialSource: initialSource,
@@ -1512,9 +1539,11 @@ class _DetailViewState extends State<_DetailView>
               ),
               history: sl<WatchHistory>(),
               showTitle: detail.title,
+              showDescription: detail.description,
               cover: detail.cover ?? widget.item.cover,
               coverHeaders: detail.coverHeaders ?? widget.item.coverHeaders,
               showUrl: widget.item.url,
+              downloadShowId: widget.item.id,
               category: launchCategory,
               malId: malId,
               scrobbleTitle: scrobbleTitle,
@@ -1523,6 +1552,7 @@ class _DetailViewState extends State<_DetailView>
               imdbId: detail.imdbId ?? widget.item.imdbId,
               availableCategories: availableCategories,
               peek: peek,
+              isMovie: detail.isFilm,
             ),
           ),
           // Same reason as the reader's [_refreshAfterReading]: ResumeStore has no
@@ -1679,6 +1709,16 @@ class _DetailViewState extends State<_DetailView>
       }
     }
     return false;
+  }
+
+  /// A film shows "Movie · 1h 52m" where an episode list would be.
+  String? _filmMeta(MediaDetail detail) {
+    if (!detail.isFilm) return null;
+    final m = detail.durationMins;
+    if (m == null || m <= 0) return context.l10n.movie;
+    return m >= 60
+        ? '${context.l10n.movie} · ${m ~/ 60}h ${m % 60}m'
+        : '${context.l10n.movie} · $m min';
   }
 
   /// Walk episodes and return the best resume target index. PRESERVED.
@@ -2219,7 +2259,9 @@ class _DetailViewState extends State<_DetailView>
               ? context.l10n.continueLabel
               : context.l10n.read)
         : (resume.hasResume
-              ? context.l10n.continueEpisode(episodeNum)
+              ? (detail.isFilm
+                    ? context.l10n.continueLabel
+                    : context.l10n.continueEpisode(episodeNum))
               : context.l10n.play);
 
     // Tall phone hero: prefer TMDB's portrait art; other sources stay as-is.
@@ -2256,8 +2298,7 @@ class _DetailViewState extends State<_DetailView>
       );
     }
 
-    // Kick off the trailer lookup (once). When it resolves, _trailerId is set
-    // and the hero swaps its static backdrop for the autoplaying trailer.
+    // The hero handles the lookup result without rebuilding the page.
     _resolveTrailer(detail);
 
     // Season data. PRESERVED.
@@ -2298,12 +2339,14 @@ class _DetailViewState extends State<_DetailView>
     if ((detail.year ?? '').isNotEmpty) metaParts.add(detail.year!);
     // A film has no episode count to fill the middle slot, so its run time
     // takes it — there it IS the thing worth knowing before pressing play.
-    if (!isReading && eps.length <= 1 && (detail.durationMins ?? 0) > 0) {
+    if (!isReading &&
+        (detail.isFilm || eps.length <= 1) &&
+        (detail.durationMins ?? 0) > 0) {
       metaParts.add('${detail.durationMins}m');
     }
-    if (hasMultipleSeasons) {
+    if (!detail.isFilm && hasMultipleSeasons) {
       metaParts.add(context.l10n.seasonCount(seasonSet.length));
-    } else if (eps.isNotEmpty) {
+    } else if (!detail.isFilm && eps.isNotEmpty) {
       metaParts.add(
         isReading
             ? context.l10n.chapterCount(eps.length)
@@ -2315,12 +2358,14 @@ class _DetailViewState extends State<_DetailView>
 
     // ── Download button label: "Download S{season}:E{n}" when we can derive
     // the first episode of the current season, else a plain "Download". ──────
-    final downloadLabel = _downloadLabel(
-      context.l10n,
-      seasonEps,
-      hasMultipleSeasons,
-      currentSeason,
-    );
+    final downloadLabel = detail.isFilm
+        ? context.l10n.download
+        : _downloadLabel(
+            context.l10n,
+            seasonEps,
+            hasMultipleSeasons,
+            currentSeason,
+          );
 
     // ── Starring / Creators (Genres fallback) muted lines ───────────────────
     // Prefer enriched cast (AniList/TMDB) when available, else the provider's.
@@ -2404,13 +2449,11 @@ class _DetailViewState extends State<_DetailView>
                 coverHeaders: coverHeaders,
                 hasCover: hasCover,
                 tint: ThemeController.adaptiveColour ? _tint : null,
-                trailerId: _trailerId,
+                trailer: _trailerFuture,
                 // Pause the trailer once the hero has scrolled past (reuses
                 // the same signal that fades in the app-bar title).
                 collapsed: _showAppBarTitle,
-                onTapFullscreen: _trailerId != null
-                    ? () => _openTrailer(_trailerId!)
-                    : null,
+                onTapFullscreen: _openTrailer,
               ),
             ),
           ),
@@ -2769,7 +2812,9 @@ class _DetailViewState extends State<_DetailView>
                 Tab(
                   text: isReading
                       ? context.l10n.chapters
-                      : context.l10n.episodes,
+                      : (detail.isFilm
+                            ? context.l10n.movie
+                            : context.l10n.episodes),
                 ),
                 Tab(
                   text: isReading ? context.l10n.characters : context.l10n.cast,
@@ -2829,6 +2874,8 @@ class _DetailViewState extends State<_DetailView>
             // Only a catalogue title has another source to fall back on.
             onSwitchSource: ZmodeIds.isZ(item.url) ? _switchSource : null,
             isReading: isReading,
+            filmMeta: _filmMeta(detail),
+            filmTitle: detail.title,
           ),
           // ── Cast ────────────────────────────────────────────────────────────
           _CastTab(
@@ -2855,6 +2902,7 @@ class _DetailViewState extends State<_DetailView>
             genres: detail.genres,
             studios: detail.studios,
             episodeCount: eps.length,
+            isMovie: detail.isFilm,
             year: detail.year,
             description: cleanSynopsis(detail.description),
             detail: detail,

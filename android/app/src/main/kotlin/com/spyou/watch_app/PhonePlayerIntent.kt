@@ -11,6 +11,7 @@ package com.spyou.watch_app
  * Map needs Serializable and is dropped silently by some OEM ROMs.
  */
 object PhonePlayerIntent {
+    const val EXTRA_CONTROLS = "controlLayout"
     const val EXTRA_URL = "url"
     const val EXTRA_HEADERS = "headers"          // flat String[]: k,v,k,v
     const val EXTRA_MIME = "mimeType"
@@ -19,6 +20,7 @@ object PhonePlayerIntent {
     const val EXTRA_EP_LABEL = "episodeLabel"
     const val EXTRA_EP_LABELS = "episodeLabels"
     const val EXTRA_EP_COUNT = "episodeCount"
+    const val EXTRA_IS_MOVIE = "isMovie"
     const val EXTRA_START_INDEX = "startIndex"
     const val EXTRA_SUB_URLS = "subUrls"
     const val EXTRA_SUB_LANGS = "subLangs"
@@ -38,6 +40,8 @@ object PhonePlayerIntent {
     const val EXTRA_AUTO_RESUME = "autoResume"
     const val EXTRA_KEEP_SCREEN_ON = "keepScreenOn"
     const val EXTRA_AUTOPLAY_NEXT = "autoplayNext"
+    const val EXTRA_MEGA_SKIP = "megaSkip"
+    const val EXTRA_MEGA_SKIP_SECONDS = "megaSkipSeconds"
     const val EXTRA_SEEK_SECONDS = "seekSeconds"
     const val EXTRA_BUF_MIN_MS = "minBufferMs"
     const val EXTRA_BUF_MAX_MS = "maxBufferMs"
@@ -45,6 +49,13 @@ object PhonePlayerIntent {
     const val EXTRA_BUF_BACK_MS = "backBufferMs"
     const val EXTRA_COVER = "cover"
     const val EXTRA_COVER_HEADERS = "coverHeaders" // flat String[]: k,v,k,v
+
+    // Phone orientation preference; TV uses its own Activity and extras.
+    const val EXTRA_ORIENTATION = "playerOrientation" // landscape, portrait, system
+    const val EXTRA_SHOW_DESC = "showDescription"
+    const val EXTRA_CATEGORIES = "availableCategories" // e.g. ["sub","dub"]
+    const val EXTRA_CATEGORY = "category" // launch version (sub/dub)
+    const val EXTRA_SESSION = "sessionId" // Dart session; guards late updates
 
     // Reported over the channel on close, not via setResult — the phone player
     // is started with startActivity, so there is no onActivityResult to hook.

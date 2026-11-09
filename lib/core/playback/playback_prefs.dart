@@ -216,6 +216,13 @@ enum PosterTitlePlacement { adaptive, inside, below }
 
 enum PosterTitleStyle { text, artwork }
 
+/// How the built-in mobile player opens an episode:
+/// [PlayerPresentation.watchPage] is the portrait page (video on top, episode
+/// info below); [PlayerPresentation.fullscreen] is the fullscreen player, in
+/// whichever orientation the lock holds. TV always opens fullscreen and
+/// never reads the preference.
+enum PlayerPresentation { watchPage, fullscreen }
+
 class PlaybackPrefs {
   static const String boxName = 'playback_prefs';
   static const String androidPlayerId = 'zangetsu.android.player';

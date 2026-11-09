@@ -20,6 +20,7 @@ import '../../core/share/share_link.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/metadata/episode_metadata_service.dart';
 import '../../core/tracker/tracker_hub.dart';
+import '../../core/tracker/simkl_playback_session.dart';
 import '../../core/models/episode.dart';
 import '../../core/models/provider_info.dart';
 import '../../core/models/video_source.dart';
@@ -38,6 +39,7 @@ import '../../core/playback/title_prefs.dart';
 import '../../core/playback/watch_history.dart';
 import '../../core/playback/subtitle_download_service.dart';
 import '../../core/playback/subtitle_translate_service.dart';
+import 'mpv_player_pool.dart';
 import '../../core/repository/catalogue_repository.dart';
 import '../../core/repository/source_repository.dart';
 import '../../core/zmode/playback_resolver.dart';
@@ -333,6 +335,8 @@ class PlayerCubit extends Cubit<PlayerState> {
 
   /// Episode indices already scrobbled this session (fire once per episode).
   final Set<int> _scrobbled = {};
+  SimklPlaybackSession? _simklPlayback;
+  bool _simklOpening = true;
 
   /// Called instead of opening a source in mpv when that source is DRM-encrypted
   /// (clearkey CENC/DASH). mpv can't decrypt DRM, so the host screen hands off to
@@ -383,18 +387,9 @@ class PlayerCubit extends Cubit<PlayerState> {
   /// episode URL's `/sub/` ↔ `/dub/` segment to this. Persisted per-title.
   String _activeCategory;
 
-  final Player player = Player(
-    configuration: PlayerConfiguration(
-      // Render subtitles via mpv/libass (real ASS styling — fonts, positions,
-      // karaoke, signs) when the user opts in. media_kit then draws subs into
-      // the video texture and hides its Flutter overlay. The Android font is
-      // libass's fallback (system fonts aren't visible to libass on Android);
-      // _setupSubtitleFonts / applySubtitleStyle refine sub-fonts-dir/sub-font
-      // after open. Off → default Player() behaviour (Flutter text overlay).
-      libass: sl<PlaybackPrefs>().styledSubtitles,
-      libassAndroidFont: 'assets/fonts/NotoSans-Regular.ttf',
-      libassAndroidFontName: 'Noto Sans',
-    ),
+  // Only unused preparation is shared; every session owns and disposes its core.
+  late final Player player = sl<MpvPlayerPool>().acquire(
+    libass: sl<PlaybackPrefs>().styledSubtitles,
   );
   final PlayerLifecycleGate _lifecycle = PlayerLifecycleGate();
   Future<void>? _nativeTeardown;
@@ -1108,6 +1103,7 @@ class PlayerCubit extends Cubit<PlayerState> {
     _subs.add(
       player.stream.playing.listen((v) {
         _playing = v;
+        _syncSimkl();
         if (v) {
           _discordPaused = false;
           _discordPauseTimer?.cancel();
@@ -1172,6 +1168,8 @@ class PlayerCubit extends Cubit<PlayerState> {
             _markWatching(); // "started watching" → CURRENT on AniList now
           }
         }
+
+        _syncSimkl();
 
         // Throttled progress capture so Continue Watching fills mid-episode
         // (without waiting for an episode switch / dispose). Cheap: at most one
@@ -1257,12 +1255,16 @@ class PlayerCubit extends Cubit<PlayerState> {
     // (covers HLS streams that report no duration, so the 92% check never fires).
     _subs.add(
       player.stream.completed.listen((done) {
-        if (done) _maybeScrobble(force: true);
+        if (done) {
+          _syncSimkl(completed: true);
+          _maybeScrobble(force: true);
+        }
       }),
     );
     _subs.add(player.stream.error.listen((e) => _onPlaybackError(e)));
     _subs.add(
       player.stream.buffering.listen((buffering) {
+        _syncSimkl(buffering: buffering);
         // A torrent local stream buffers while pieces download — that's normal,
         // not a dead source. Arming the stall watchdog would restart the torrent
         // from scratch and churn native memory (force close). Skip it for torrents.
@@ -2088,8 +2090,12 @@ class PlayerCubit extends Cubit<PlayerState> {
     int index, {
     bool fromRoom = false,
     bool resetSourceCooldowns = true,
+    VideoSource? sourceOverride,
   }) async {
     if (_isRoomViewer && !fromRoom) return;
+    _simklOpening = true;
+    _simklPlayback?.stop();
+    _simklPlayback = null;
     final gen = ++_gen;
     // A newer open supersedes any progressive Play still listening: drop its
     // late events at the source (the episode guard below is the backstop).
@@ -2127,6 +2133,12 @@ class PlayerCubit extends Cubit<PlayerState> {
       sl<PlaybackResolver>().invalidateWinner(_episodeUrl(currentEpisode));
     }
     try {
+      if (sourceOverride != null) {
+        if (gen != _gen || isClosed) return;
+        initialSource = null;
+        await _openResolved([sourceOverride], gen);
+        return;
+      }
       final epUrl = _episodeUrl(currentEpisode);
       final downloaded = await _resolveDownloadedSources?.call(epUrl);
       if (gen != _gen || isClosed) return;
@@ -2699,6 +2711,12 @@ class PlayerCubit extends Cubit<PlayerState> {
     bool softwareDecodeRetry = false,
   }) async {
     final g = gen ?? ++_gen;
+    _simklPlayback?.update(
+      positionMs: _lastPos.inMilliseconds,
+      durationMs: _lastDur.inMilliseconds,
+      playing: false,
+    );
+    _simklOpening = true;
     final invalidatesSoftwareRetry = shouldInvalidateSoftwareDecoderRetry(
       retryInProgress: _softwareDecodeRetryInProgress,
       openingRetry: softwareDecodeRetry,
@@ -2897,6 +2915,10 @@ class PlayerCubit extends Cubit<PlayerState> {
         if (invalidatesSoftwareRetry) _recovering = false;
       }
       await player.open(Media(playUrl, httpHeaders: s.headers));
+      if (g == _gen && !isClosed) {
+        _simklOpening = false;
+        _syncSimkl();
+      }
     });
     if (g != _gen || isClosed || !_lifecycle.canContinue(openToken)) return;
     final didOpen = await _lifecycle.runPlayerOpenSteps(openToken, setupSteps);
@@ -3260,11 +3282,20 @@ class PlayerCubit extends Cubit<PlayerState> {
   /// Advisory only. It feeds the health screen; it never affects search order,
   /// never skips a source, and never removes anything.
   Future<List<VideoSource>> _resolveNoted(String epUrl) async {
+    final sw = Stopwatch()..start();
     try {
       final out = await _resolveSources(epUrl);
+      sw.stop();
+      debugPrint(
+        '[player-timing] resolve ${sw.elapsedMilliseconds}ms (${out.length} links)',
+      );
       _notePlayback(ok: out.isNotEmpty);
       return out;
     } catch (_) {
+      sw.stop();
+      debugPrint(
+        '[player-timing] resolve FAILED after ${sw.elapsedMilliseconds}ms',
+      );
       _notePlayback(ok: false);
       rethrow;
     }
@@ -3846,12 +3877,38 @@ class PlayerCubit extends Cubit<PlayerState> {
     _maybeScrobble();
   }
 
-  /// AniList auto-scrobble: once the current episode crosses 92% (or the player
-  /// signals completion via [force], covering HLS streams with no reported
-  /// duration), push it once per episode per session (the service also de-dupes
-  /// persistently). Identifies the anime by [malId] when present, else by
-  /// [scrobbleTitle]. Whole-numbered episodes only.
-  /// Mark the anime CURRENT on AniList the instant playback starts.
+  void _syncSimkl({bool? buffering, bool completed = false}) {
+    if (peek ||
+        isClosed ||
+        _simklOpening ||
+        state.loadingSources ||
+        state.active == null ||
+        !_startedThisSource ||
+        !sl.isRegistered<TrackerHub>()) {
+      return;
+    }
+    final ep = currentEpisode;
+    final n = ep.number;
+    _simklPlayback ??= sl<TrackerHub>().simklPlayback(
+      malId: malId,
+      tmdbId: tmdbId,
+      tmdbIsTv: tmdbIsTv,
+      imdbId: imdbId,
+      episode: n != null && n.isFinite && n > 0 && n == n.truncateToDouble()
+          ? n.toInt()
+          : null,
+      season: ep.season,
+      seasonEpisode: seasonEpisodeOf(episodes, ep),
+    );
+    _simklPlayback?.update(
+      positionMs: _lastPos.inMilliseconds,
+      durationMs: _lastDur.inMilliseconds,
+      playing: _playing && !(buffering ?? player.state.buffering),
+      completed: completed,
+    );
+  }
+
+  /// Mark the anime CURRENT when playback starts.
   void _markWatching() {
     if (peek) return;
     if (malId == null &&
@@ -3894,6 +3951,7 @@ class PlayerCubit extends Cubit<PlayerState> {
       tmdbIsTv: tmdbIsTv,
       imdbId: imdbId,
       episode: ep.toInt(),
+      simklLive: _simklPlayback != null && _lastDur > Duration.zero,
       // Deliberately the raw field, not seasonOf(): that falls back to parsing
       // the episode title, and a guessed season written into someone's watch
       // history is worse than the flat numbering it would replace.
@@ -3978,6 +4036,7 @@ class PlayerCubit extends Cubit<PlayerState> {
 
   @override
   Future<void> close() {
+    _simklPlayback?.stop();
     // Leaving supersedes anything still in flight. Every delayed continuation
     // in here bails when _gen moves on, so bumping it once is what stops one
     // firing into a disposed player: the resume watchdog sleeps 15s, then 4s
