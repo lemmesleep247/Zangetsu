@@ -1,0 +1,53 @@
+name: Nightly debug build
+
+on:
+  schedule:
+    # 08:30 UTC = 2:00pm IST (GitHub cron is always UTC).
+    - cron: "30 8 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-debug
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.7"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build debug APK
+        # The proprietary Discord SDK is gitignored, so CI builds without it.
+        # ZANGETSU_NIGHTLY gives it its own package (.nightly) + launcher name
+        # so it installs alongside release instead of "updating" it.
+        env:
+          ZANGETSU_NO_DISCORD: "1"
+          ZANGETSU_NIGHTLY: "1"
+        run: flutter build apk --debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: zangetsu-nightly
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 14

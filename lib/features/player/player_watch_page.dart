@@ -25,6 +25,7 @@ class PlayerWatchPage extends StatefulWidget {
     required this.header,
     this.coverHeaders,
     this.loading = false,
+    this.loadingStatus,
     this.bufferingStream,
     this.initialBuffering = false,
     this.firstFrameStream,
@@ -78,6 +79,7 @@ class PlayerWatchPage extends StatefulWidget {
   /// A resolve is in flight (episode switch or first load). The page stays —
   /// the spinner sits on the mini player instead of a black loader screen.
   final bool loading;
+  final String? loadingStatus;
   final Stream<bool>? bufferingStream;
   final bool initialBuffering;
 
@@ -630,6 +632,26 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
                   },
                 ),
               ),
+              if (widget.loadingStatus != null)
+                Positioned(
+                  top: 12,
+                  left: 50,
+                  right: 50,
+                  child: IgnorePointer(
+                    child: Text(
+                      widget.loadingStatus!,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.caption.copyWith(
+                        color: Colors.white,
+                        shadows: const [
+                          Shadow(blurRadius: 6, color: Colors.black),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               Positioned(left: 0, right: 0, bottom: 0, child: _seekRow()),
             ],
           ),
@@ -640,92 +662,95 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
 
   /// The only subtree that rebuilds every second.
   Widget _seekRow() {
-    return AnimatedOpacity(
-      opacity: _controlsVisible ? 1 : 0,
-      duration: const Duration(milliseconds: 200),
-      child: IgnorePointer(
-        ignoring: !_controlsVisible,
-        child: StreamBuilder<Duration?>(
-          stream: widget.durationStream,
-          initialData: widget.initialDuration,
-          builder: (context, durSnap) {
-            final total = durSnap.data ?? Duration.zero;
-            return StreamBuilder<Duration>(
-              stream: widget.positionStream,
-              initialData: widget.initialPosition,
-              builder: (context, posSnap) {
-                final pos = posSnap.data ?? Duration.zero;
-                final maxMs = total.inMilliseconds > 0
-                    ? total.inMilliseconds.toDouble()
-                    : 1.0;
-                final value = pos.inMilliseconds.toDouble().clamp(0.0, maxMs);
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        height: 24,
-                        child: SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            activeTrackColor: AppColors.accent,
-                            inactiveTrackColor: Colors.white.withValues(
-                              alpha: 0.35,
-                            ),
-                            thumbColor: AppColors.accent,
-                            thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 5,
-                            ),
-                            overlayShape: const RoundSliderOverlayShape(
-                              overlayRadius: 10,
-                            ),
-                            trackHeight: 3,
-                            trackShape: const RectangularSliderTrackShape(),
-                          ),
-                          child: Slider(
-                            padding: EdgeInsets.zero,
-                            value: value,
-                            max: maxMs,
-                            onChanged: (v) => widget.onSeek(
-                              Duration(milliseconds: v.round()),
-                            ),
-                          ),
-                        ),
-                      ),
-                      SizedBox(
-                        height: 32,
-                        child: Row(
-                          children: [
-                            Text(
-                              '${formatWatchTime(pos)} / ${formatWatchTime(total)}',
-                              style: AppText.caption.copyWith(
-                                color: Colors.white,
-                                fontSize: 13,
+    return Directionality(
+      textDirection: TextDirection.ltr,
+      child: AnimatedOpacity(
+        opacity: _controlsVisible ? 1 : 0,
+        duration: const Duration(milliseconds: 200),
+        child: IgnorePointer(
+          ignoring: !_controlsVisible,
+          child: StreamBuilder<Duration?>(
+            stream: widget.durationStream,
+            initialData: widget.initialDuration,
+            builder: (context, durSnap) {
+              final total = durSnap.data ?? Duration.zero;
+              return StreamBuilder<Duration>(
+                stream: widget.positionStream,
+                initialData: widget.initialPosition,
+                builder: (context, posSnap) {
+                  final pos = posSnap.data ?? Duration.zero;
+                  final maxMs = total.inMilliseconds > 0
+                      ? total.inMilliseconds.toDouble()
+                      : 1.0;
+                  final value = pos.inMilliseconds.toDouble().clamp(0.0, maxMs);
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          height: 24,
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              activeTrackColor: AppColors.accent,
+                              inactiveTrackColor: Colors.white.withValues(
+                                alpha: 0.35,
                               ),
+                              thumbColor: AppColors.accent,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 5,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 10,
+                              ),
+                              trackHeight: 3,
+                              trackShape: const RectangularSliderTrackShape(),
                             ),
-                            const Spacer(),
-                            IconButton(
+                            child: Slider(
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints.tightFor(
-                                width: 32,
-                                height: 32,
+                              value: value,
+                              max: maxMs,
+                              onChanged: (v) => widget.onSeek(
+                                Duration(milliseconds: v.round()),
                               ),
-                              icon: const Icon(
-                                Icons.fullscreen_rounded,
-                                color: Colors.white,
-                                size: 24,
-                              ),
-                              onPressed: widget.onFullscreen,
                             ),
-                          ],
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            );
-          },
+                        SizedBox(
+                          height: 32,
+                          child: Row(
+                            children: [
+                              Text(
+                                '${formatWatchTime(pos)} / ${formatWatchTime(total)}',
+                                style: AppText.caption.copyWith(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              const Spacer(),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 32,
+                                  height: 32,
+                                ),
+                                icon: const Icon(
+                                  Icons.fullscreen_rounded,
+                                  color: Colors.white,
+                                  size: 24,
+                                ),
+                                onPressed: widget.onFullscreen,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
         ),
       ),
     );
@@ -836,7 +861,7 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
 
   Widget _actionRow(AppLocalizations l10n) {
     final serverLabel = widget.serverName?.trim().isNotEmpty ?? false
-        ? 'Server · ${widget.serverName!.trim()}'
+        ? 'Server · ${widget.serverName!.trim().split(RegExp(r"[\r\n]")).first}'
         : l10n.watchServer;
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
@@ -864,19 +889,28 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
               color: AppColors.surface2,
               borderRadius: BorderRadius.circular(999),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, color: Colors.white, size: 18),
-                const SizedBox(width: 6),
-                Text(
-                  label,
-                  style: AppText.body.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: MediaQuery.sizeOf(context).width * 0.58,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, color: Colors.white, size: 18),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.body.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

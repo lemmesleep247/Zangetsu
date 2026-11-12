@@ -40,6 +40,10 @@ import '../../core/models/video_source.dart';
 import '../../core/playback/resume_store.dart';
 import '../../core/playback/tv_track_helpers.dart' show tvEpisodeUrl;
 import '../../core/ui/episode_player_sheet.dart' show showMirrorSheet;
+import '../../core/stremio/stremio_manager.dart';
+import '../../core/stremio/stremio_ref.dart';
+import '../../core/stremio/stremio_stream_mapping.dart';
+import '../detail/stremio_episode_links_sheet.dart';
 import '../../core/ui/app_toast.dart';
 import '../../core/playback/skip_service.dart';
 import '../../core/playback/source_selection.dart';
@@ -333,8 +337,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// the initState hand-off, the header-gated proxy path, and the launch call.
   /// Reading prefs directly in each is how an override gets honoured by two of
   /// them and silently dropped by the third.
-  String get _chosenPlayer =>
-      widget.playerOverride ?? sl<PlaybackPrefs>().externalPlayerPackage;
+  String get _chosenPlayer => stremioPlayerPackage(
+    widget.sourceId,
+    widget.initialSource,
+    widget.playerOverride ?? sl<PlaybackPrefs>().externalPlayerPackage,
+  );
 
   late final PlayerCubit _c;
   final WatchTogetherController _room = sl<WatchTogetherController>();
@@ -650,6 +657,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  void _applyPlayerSystemUi() {
+    final watchPage = _watchPageEnabled &&
+        _presentation == PlayerPresentation.watchPage;
+    SystemChrome.setEnabledSystemUIMode(
+      watchPage ? SystemUiMode.edgeToEdge : SystemUiMode.immersiveSticky,
+    );
+    if (watchPage) {
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+      ));
+    }
+  }
+
   void _enterFullscreen({bool fromRotation = false}) {
     _stopAmbientSampler();
     if (!fromRotation) _followSensor = false;
@@ -659,6 +681,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _portraitMode = false;
       _presentation = PlayerPresentation.fullscreen;
     });
+    _applyPlayerSystemUi();
     // Fullscreen holds the saved orientation, or follows the sensor.
     SystemChrome.setPreferredOrientations(_orientationLock);
   }
@@ -669,6 +692,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _lastOrientation = MediaQuery.orientationOf(context);
     setState(() => _presentation = PlayerPresentation.watchPage);
     _portraitMode = true;
+    _applyPlayerSystemUi();
     SystemChrome.setPreferredOrientations(_orientationLock);
   }
 
@@ -689,6 +713,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         isLandscape: current == Orientation.landscape,
       );
       _presentation = initial;
+      _applyPlayerSystemUi();
       if (initial == PlayerPresentation.watchPage) {
         _startAmbientSampler();
         _portraitMode = true;
@@ -814,7 +839,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _initInApp() {
     _routeTeardownLease ??= playerRouteTeardownBarrier.acquire();
     if (!_watchPageEnabled) _applyOrientationWhenCovered();
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    _applyPlayerSystemUi();
     // Wake-lock is bound to playback in _startSession, once the player exists.
     // The volume swipe sets the real system volume; hide the OS volume bar so
     // only our own HUD shows (CloudStream draws its own too). Restored on exit.
@@ -1160,7 +1185,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         if (i >= 0) idx = i;
       }
       final ep = eps[idx.clamp(0, eps.length - 1)];
-      final sources = await widget.resolveSources(ep.url);
+      final sources =
+          stremioSeedSources(widget.sourceId, widget.initialSource) ??
+          await widget.resolveSources(ep.url);
       final prefer = widget.category == 'dub' ? AudioKind.dub : AudioKind.sub;
       final src = pickDefault(sources, prefer: prefer);
       if (src == null) throw StateError('no source');
@@ -1962,7 +1989,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // Back to whichever orientation you were watching in — not landscape by
     // default, or a portrait session would end up sideways after a settings trip.
     await SystemChrome.setPreferredOrientations(_orientationLock);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    _applyPlayerSystemUi();
     if (!mounted) return;
     if (wasPlaying && !_c.player.state.playing) _c.togglePlay();
     _bumpControls();
@@ -2274,11 +2301,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
               offset: _zoomPan,
               child: Transform.scale(
                 scale: _zoom,
-                child: Video(
-                  controller: _c.videoController,
-                  controls: NoVideoControls,
-                  fit: _fits[_fitIndex].$1,
-                  subtitleViewConfiguration: _subtitleConfig(),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Video(
+                      controller: _c.videoController,
+                      controls: NoVideoControls,
+                      fit: _fits[_fitIndex].$1,
+                      subtitleViewConfiguration: const SubtitleViewConfiguration(
+                        visible: false,
+                      ),
+                    ),
+                    if (!_c.styledSubtitlesOn)
+                      StreamBuilder<List<String>>(
+                        stream: _c.player.stream.subtitle,
+                        initialData: _c.player.state.subtitle,
+                        builder: (context, snapshot) {
+                          final prefs = sl<PlaybackPrefs>();
+                          return PositionedSubtitle(
+                            text: (snapshot.data ?? const <String>[])
+                                .where((line) => line.trim().isNotEmpty)
+                                .join('\n'),
+                            position: prefs.subtitlePosition,
+                            style: buildSubtitleTextStyle(
+                              prefs,
+                              fontSize: 32 * prefs.subtitleScale,
+                            ),
+                          );
+                        },
+                      ),
+                  ],
                 ),
               ),
             ),
@@ -2841,7 +2893,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       coverUrl: (_c.currentEpisode.thumbnail?.trim().isNotEmpty ?? false)
           ? _c.currentEpisode.thumbnail!.trim()
           : widget.cover,
-      loading: state.loadingSources,
+      loading: state.loadingSources || state.torrentPhase != null,
+      loadingStatus: state.torrentPhase,
       bufferingStream: _c.player.stream.buffering,
       initialBuffering: _c.player.state.buffering,
       firstFrameStream: _c.player.stream.width,
@@ -3003,24 +3056,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
         ],
       ),
-    );
-  }
-
-  /// Build the Flutter subtitle overlay style from the user's prefs. media_kit
-  /// renders text subtitles via this [SubtitleViewConfiguration] (a Flutter
-  /// overlay), NOT libass — so font/colour/size/outline/position all live here.
-  /// The [TextStyle] comes from the shared [buildSubtitleTextStyle] so the live
-  /// preview in the style sheet matches exactly what renders on the video.
-  SubtitleViewConfiguration _subtitleConfig() {
-    final p = sl<PlaybackPrefs>();
-    // position 0 (top) … 100 (bottom). Higher value → nearer the bottom (less
-    // bottom padding); lower value lifts the text up the frame.
-    final pos = p.subtitlePosition.clamp(0, 100);
-    final bottom = 16.0 + (100 - pos) * 3.0;
-    return SubtitleViewConfiguration(
-      textAlign: TextAlign.center,
-      padding: EdgeInsets.fromLTRB(16, 0, 16, bottom),
-      style: buildSubtitleTextStyle(p, fontSize: 32.0 * p.subtitleScale),
     );
   }
 
@@ -3211,7 +3246,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _sheet<void>(_SheetColumn(header: context.l10n.quality, children: rows));
   }
 
+  Future<void> _openStremioSourceSheet() async {
+    final index = _c.state.currentIndex;
+    final episode = _c.currentEpisode;
+    final picked = await showStremioEpisodeLinksSheet(
+      context,
+      manager: sl<StremioManager>(),
+      ref: StremioRef.parse(episode.url),
+      title: episode.title,
+    );
+    if (picked == null ||
+        !mounted ||
+        _c.isClosed ||
+        _c.state.currentIndex != index) {
+      return;
+    }
+    await _c.selectSource(picked);
+    await _maybeRecast();
+    _bumpControls();
+  }
+
   void _openSourceSheet() {
+    if (widget.sourceId == stremioSourceId && !widget.localOnly) {
+      unawaited(_openStremioSourceSheet());
+      return;
+    }
     final kinds = availableKinds(_c.state.sources);
     _sheet<void>(
       _SheetColumn(
@@ -3513,10 +3572,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             // episode info below. It stays up through source resolves — the
             // loading spinner sits on the mini player instead of a black
             // loader screen, and the header is already the new episode
-            // (the cubit emits the index before resolving). Errors and
-            // torrent phases keep their dedicated screens below.
+            // (the cubit emits the index before resolving). Torrent progress
+            // stays in the miniplayer; errors keep their screen below.
             if (_presentation == PlayerPresentation.watchPage &&
-                state.torrentPhase == null &&
                 state.error == null) {
               return _buildWatchPage(state);
             }
@@ -3614,6 +3672,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         onFit: _cycleFit,
                         onNext: _c.hasPlayableNext ? () => _c.playNext() : null,
                         onBack: () => Navigator.of(context).maybePop(),
+                        onInfo: _infoFields.isEmpty
+                            ? null
+                            : () => setState(
+                                () => _infoPanelOpen = !_infoPanelOpen,
+                              ),
+                        showInfo: _infoFields.isNotEmpty,
+                        infoOpen: _infoPanelOpen,
                         playingStream: _c.player.stream.playing,
                         initialPlaying: _c.player.state.playing,
                         barVisible: _tvBarVisible,
@@ -4037,11 +4102,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   // 6b. Player info overlay ("stats for nerds") — the fields the
                   // user ticked in Settings, toggled by the ⓘ button (top-left,
-                  // below the top bar). Persists until toggled off.
-                  if (!sl<AppMode>().isTv &&
-                      !_locked &&
-                      _infoPanelOpen &&
-                      _infoFields.isNotEmpty)
+                  // below the top bar on phone; Info button in the bar on TV).
+                  // Persists until toggled off.
+                  if (!_locked && _infoPanelOpen && _infoFields.isNotEmpty)
                     Positioned(
                       left: 16,
                       top: MediaQuery.of(context).padding.top + 58,
