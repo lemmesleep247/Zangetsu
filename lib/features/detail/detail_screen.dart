@@ -76,6 +76,7 @@ import '../../core/models/media_item.dart';
 import '../../core/models/media_extras.dart';
 import '../../core/models/person.dart';
 import '../home/search_screen.dart';
+import 'title_search_popup.dart';
 import '../people/person_page.dart';
 import '../../core/models/video_source.dart';
 import '../../core/models/provider_info.dart';
@@ -606,6 +607,27 @@ class _DetailViewState extends State<_DetailView>
       _loadLogo();
     } else {
       setState(() {});
+    }
+  }
+
+  /// Title tap → search popup: prefilled query, "Search" opens the normal
+  /// search, "Search all sources" opens the sources search. Same title text.
+  Future<void> _onTitleTap(String title) async {
+    final req = await showTitleSearchPopup(context, title);
+    if (!mounted || req == null) return;
+    if (req == TitleSearchChoice.searchAll) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              SearchScreen(initialQuery: title, forceSources: true),
+        ),
+      );
+    } else {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => SearchScreen(initialQuery: title),
+        ),
+      );
     }
   }
 
@@ -1468,16 +1490,15 @@ class _DetailViewState extends State<_DetailView>
       );
       return;
     }
-    // External player and no mirror picked yet: open the mirror sheet first
-    // (Stremio mode already does this via its links sheet), so the viewer
-    // chooses which link the external player gets instead of auto-playing
-    // the resolver's pick. Built-in keeps the fast auto-resolve.
+    // Only another app needs a link choice before launch; both in-app players
+    // keep their automatic launch.
+    final playerPackage =
+        playerOverride?.package ?? sl<PlaybackPrefs>().externalPlayerPackage;
     if (initialSource == null &&
         index >= 0 &&
         index < episodes.length &&
-        (playerOverride?.package ??
-                sl<PlaybackPrefs>().externalPlayerPackage)
-            .isNotEmpty) {
+        playerPackage.isNotEmpty &&
+        playerPackage != PlaybackPrefs.androidPlayerId) {
       final ep = episodes[index];
       final sources = await _resolveWithProgress(ep);
       if (!mounted) return;
@@ -2591,15 +2612,10 @@ class _DetailViewState extends State<_DetailView>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Tapping the title opens the full search pre-filled with it
-                  // (current source + all sources, per Search's own scope toggle).
+                  // Tapping the title opens the search popup (Cue pop-in):
+                  // pre-filled query, "Search" or "Search all sources".
                   GestureDetector(
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) =>
-                            SearchScreen(initialQuery: detail.title),
-                      ),
-                    ),
+                    onTap: () => _onTitleTap(detail.title),
                     // Official title logo when the toggle resolved one —
                     // grows in smoothly instead of shoving Play down.
                     child: AnimatedSize(

@@ -129,6 +129,12 @@ void main() {
       int positionMs = 0,
       bool megaSkip = true,
       int megaSkipSeconds = 85,
+      bool softwareDecoding = false,
+      String? decoderMode,
+      bool nativeCacheEnabled = false,
+      int nativeCacheMb = 128,
+      bool diskCacheEnabled = false,
+      int diskCacheGb = 2,
     }) => phonePlayerArgs(
       source: source ?? _src(),
       positionMs: positionMs,
@@ -137,7 +143,12 @@ void main() {
       episodeLabels: const ['Episode 1', 'Episode 2'],
       startIndex: 0,
       accentColor: 0xFFFF4D5E,
-      softwareDecoding: false,
+      softwareDecoding: softwareDecoding,
+      decoderMode: decoderMode,
+      nativeCacheEnabled: nativeCacheEnabled,
+      nativeCacheMb: nativeCacheMb,
+      diskCacheEnabled: diskCacheEnabled,
+      diskCacheGb: diskCacheGb,
       defaultSpeed: 1.0,
       bufferParams: const {
         'minBufferMs': 15000,
@@ -170,6 +181,44 @@ void main() {
         expect(custom['seekSeconds'], 15);
         expect(args(megaSkipSeconds: 1)['megaSkipSeconds'], 5);
         expect(args(megaSkipSeconds: 999)['megaSkipSeconds'], 180);
+      },
+    );
+
+    test(
+      'native launch carries automatic decoder compatibility by default',
+      () {
+        expect(args()['decoderMode'], 'auto');
+      },
+    );
+
+    test(
+      'native launch preserves decoder choices and legacy software flag',
+      () {
+        for (final mode in ['auto', 'copy', 'direct', 'sw']) {
+          expect(args(decoderMode: mode)['decoderMode'], mode);
+        }
+        expect(args(softwareDecoding: true)['decoderMode'], 'sw');
+        final explicit = args(softwareDecoding: true, decoderMode: 'direct');
+        expect(explicit['decoderMode'], 'direct');
+        expect(explicit['softwareDecoding'], isTrue);
+      },
+    );
+
+    test(
+      'extra native caches are opt-in and transmitted with bounded amounts',
+      () {
+        expect(args()['nativeCacheEnabled'], isFalse);
+        expect(args()['diskCacheEnabled'], isFalse);
+        final configured = args(
+          nativeCacheEnabled: true,
+          nativeCacheMb: 99999,
+          diskCacheEnabled: true,
+          diskCacheGb: -5,
+        );
+        expect(configured['nativeCacheEnabled'], isTrue);
+        expect(configured['nativeCacheMb'], 512);
+        expect(configured['diskCacheEnabled'], isTrue);
+        expect(configured['diskCacheGb'], 1);
       },
     );
 
