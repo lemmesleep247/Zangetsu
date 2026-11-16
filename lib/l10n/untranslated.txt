@@ -2,6 +2,8 @@
   "ar": [
     "customRange",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -136,13 +138,17 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "de": [
     "customRange",
     "searchOk",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -390,13 +396,17 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "es": [
     "customRange",
     "searchOk",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -644,13 +654,17 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "fr": [
     "customRange",
     "searchOk",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -898,12 +912,16 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "id": [
     "customRange",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -1038,13 +1056,17 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "it": [
     "customRange",
     "searchOk",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -1292,13 +1314,17 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "ja": [
     "customRange",
     "searchOk",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -1546,12 +1572,16 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "pt": [
     "customRange",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -1686,12 +1716,16 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "tr": [
     "customRange",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -1826,13 +1860,17 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "zh": [
     "customRange",
     "searchOk",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -2080,13 +2118,17 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ],
 
   "zh_TW": [
     "customRange",
     "searchOk",
     "discordActivityStatus",
+    "discordOnlineStatus",
+    "presenceInvisible",
     "presenceOnline",
     "presenceIdle",
     "presenceDnd",
@@ -2334,6 +2376,8 @@
     "androidDiskCacheDescription",
     "androidCacheClear",
     "androidCacheClearBusy",
-    "androidCacheUnavailable"
+    "androidCacheUnavailable",
+    "autoPlayerFallback",
+    "autoPlayerFallbackDescription"
   ]
 }

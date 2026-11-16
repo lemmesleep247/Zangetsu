@@ -346,13 +346,12 @@ class PlaybackPrefs {
   Future<void> setNativeTvPlayer(bool value) =>
       _box.put('nativeTvPlayer', value);
 
-  /// Decoder priority for native Android TV playback. The legacy boolean is
-  /// read only when this setting has not yet been saved, preserving the old
-  /// hardware-first fallback behavior for existing users.
+  /// TV defaults to hardware-first with software decoders available.
+  /// Explicit saved modes and legacy choices take priority over the default.
   TvDecoderMode get tvDecoderMode => TvDecoderMode.fromStorage(
     _box.get('tvDecoderMode'),
     legacySoftwareDecoding:
-        _box.get('tvSoftwareDecoding', defaultValue: false) == true,
+        _box.get('tvSoftwareDecoding', defaultValue: true) == true,
   );
 
   Future<void> setTvDecoderMode(TvDecoderMode value) async {
@@ -899,6 +898,11 @@ class PlaybackPrefs {
 
   Future<void> setMegaSkipSeconds(int value) =>
       _box.put('megaSkipSeconds', value.clamp(megaSkipMin, megaSkipMax));
+
+  bool get autoPlayerFallback =>
+      _box.get('autoPlayerFallback', defaultValue: false) as bool;
+  Future<void> setAutoPlayerFallback(bool value) =>
+      _box.put('autoPlayerFallback', value);
 
   /// Default player. Empty string = the built-in player; otherwise the package
   /// id of an external player (e.g. 'org.videolan.vlc') to hand streams to.

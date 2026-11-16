@@ -356,6 +356,12 @@ class AppLocalizationsEs extends AppLocalizations {
   String get discordActivityStatus => 'Activity status';
 
   @override
+  String get discordOnlineStatus => 'Discord status';
+
+  @override
+  String get presenceInvisible => 'Invisible';
+
+  @override
   String get presenceOnline => 'Online';
 
   @override
@@ -5765,4 +5771,11 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get androidCacheUnavailable =>
       'Could not read the playback cache. Try opening this page again.';
+
+  @override
+  String get autoPlayerFallback => 'Auto-switch player';
+
+  @override
+  String get autoPlayerFallbackDescription =>
+      'Experimental · Retry failed playback';
 }

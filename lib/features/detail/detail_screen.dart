@@ -95,6 +95,7 @@ import '../../core/tracker/tracker_binding_store.dart';
 import '../../core/tracker/tracker_hub.dart';
 import '../../core/stremio/stremio_manager.dart';
 import '../../core/stremio/stremio_ref.dart';
+import '../../core/stremio/stremio_stream_mapping.dart';
 import '../../core/playback/playback_prefs.dart';
 import '../player/mpv_player_pool.dart';
 import '../../core/playback/resume_store.dart';
@@ -366,6 +367,19 @@ class _DetailCloudflareBlockedState extends State<_DetailCloudflareBlocked> {
   }
 }
 
+SearchScreen detailTitleSearchScreen({
+  required String title,
+  required String sourceId,
+  required TitleSearchChoice choice,
+}) => SearchScreen(
+  initialQuery: title,
+  forceSources: choice == TitleSearchChoice.searchAll,
+  fixedSourceId:
+      choice == TitleSearchChoice.search && sourceId == stremioSourceId
+      ? stremioSourceId
+      : null,
+);
+
 class DetailScreen extends StatelessWidget {
   const DetailScreen({super.key, required this.item, this.prefer});
   final MediaItem item;
@@ -610,25 +624,19 @@ class _DetailViewState extends State<_DetailView>
     }
   }
 
-  /// Title tap → search popup: prefilled query, "Search" opens the normal
-  /// search, "Search all sources" opens the sources search. Same title text.
+  /// Stremio title search stays in its addon catalogue.
   Future<void> _onTitleTap(String title) async {
     final req = await showTitleSearchPopup(context, title);
     if (!mounted || req == null) return;
-    if (req == TitleSearchChoice.searchAll) {
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) =>
-              SearchScreen(initialQuery: title, forceSources: true),
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => detailTitleSearchScreen(
+          title: title,
+          sourceId: widget.item.sourceId,
+          choice: req,
         ),
-      );
-    } else {
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => SearchScreen(initialQuery: title),
-        ),
-      );
-    }
+      ),
+    );
   }
 
   /// Plain-text titles (the Title artwork toggle only swaps in a logo once
@@ -1657,7 +1665,16 @@ class _DetailViewState extends State<_DetailView>
 
     Navigator.of(context)
         .push(
-          EpisodePlayerRoute(
+          episodePlayerRoute(
+            nativeHandoff:
+                Platform.isAndroid &&
+                stremioPlayerPackage(
+                      widget.item.sourceId,
+                      initialSource,
+                      playerOverride?.package ??
+                          sl<PlaybackPrefs>().externalPlayerPackage,
+                    ) ==
+                    PlaybackPrefs.androidPlayerId,
             builder: (_) => PlayerScreen(
               playerOverride: playerOverride?.package,
               initialSource: initialSource,
@@ -2409,7 +2426,8 @@ class _DetailViewState extends State<_DetailView>
     final coverUrl =
         mobileHeroArt(
           detail.cover ?? item.cover,
-          detail.banner ?? item.banner,
+          detail.banner ?? item.banner ?? item.landscapePoster,
+          sourceId: detail.sourceId,
         ) ??
         '';
     final coverHeaders = detail.coverHeaders ?? item.coverHeaders;
