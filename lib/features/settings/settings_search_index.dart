@@ -297,6 +297,16 @@ final settingsLeaves = <SettingsLeaf>[
 
   SettingsLeaf(LeafParent.playback, (l) => l.tvDecoderMode),
   SettingsLeaf(LeafParent.playback, (l) => l.autoPlayerFallback),
+  SettingsLeaf(
+    LeafParent.playback,
+    (l) => l.portraitVideoEdgeToEdge,
+    keywords: 'portrait video full width mini player',
+  ),
+  SettingsLeaf(
+    LeafParent.playback,
+    (l) => l.ambientPlayer,
+    keywords: 'glow portrait',
+  ),
   SettingsLeaf(LeafParent.playback, (l) => l.androidPlayerCache),
 
   // Reading → ReaderSettingsScreen

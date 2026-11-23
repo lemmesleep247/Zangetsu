@@ -36,14 +36,17 @@ object PhonePlayerIntent {
     const val EXTRA_DISK_CACHE = "diskCacheEnabled"
     const val EXTRA_DISK_CACHE_GB = "diskCacheGb"
     const val EXTRA_SPEED = "defaultSpeed"
+    const val EXTRA_HOLD_SPEED = "holdSpeed"
     const val EXTRA_SUB_SCALE = "subtitleScale"
     const val EXTRA_SUB_FG = "subtitleFgColor"
     const val EXTRA_SUB_BG_COLOR = "subtitleBgColor"
     const val EXTRA_SUB_EDGE_TYPE = "subtitleEdgeType"
     const val EXTRA_SUB_EDGE_COLOR = "subtitleEdgeColor"
     const val EXTRA_SUB_PREFERENCE = "subtitlePreference"
+    const val EXTRA_SUB_POSITION = "subtitlePosition"
     const val EXTRA_SUB_FONT = "subtitleFontPath"
     const val EXTRA_AUTO_RESUME = "autoResume"
+    const val EXTRA_AUTO_PIP = "autoPip"
     const val EXTRA_KEEP_SCREEN_ON = "keepScreenOn"
     const val EXTRA_AUTOPLAY_NEXT = "autoplayNext"
     const val EXTRA_MEGA_SKIP = "megaSkip"
@@ -58,11 +61,13 @@ object PhonePlayerIntent {
 
     // Phone orientation preference; TV uses its own Activity and extras.
     const val EXTRA_ORIENTATION = "playerOrientation" // landscape, portrait, system
+    const val EXTRA_PORTRAIT_VIDEO_EDGE_TO_EDGE = "portraitVideoEdgeToEdge"
     const val EXTRA_SHOW_DESC = "showDescription"
     const val EXTRA_CATEGORIES = "availableCategories" // e.g. ["sub","dub"]
     const val EXTRA_CATEGORY = "category" // launch version (sub/dub)
     const val EXTRA_SESSION = "sessionId" // Dart session; guards late updates
     const val EXTRA_AUTO_ENGINE_FALLBACK = "autoPlayerFallback"
+    const val EXTRA_AMBIENT_ENABLED = "ambientPlayer"
 
     // Reported over the channel on close, not via setResult — the phone player
     // is started with startActivity, so there is no onActivityResult to hook.

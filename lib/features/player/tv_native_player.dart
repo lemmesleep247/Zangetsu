@@ -32,6 +32,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/torrent/torrent_prefs.dart';
 import '../../core/torrent/torrent_service.dart';
 import '../../core/torrent/torrent_util.dart';
+import 'playback_loading_title.dart' show playbackArtworkHeaders;
 import 'subtitle_font_service.dart';
 import 'tv_progressive_sources.dart';
 
@@ -77,7 +78,10 @@ class TvNativePlayer {
   static String? _cover;
   static Map<String, String>? _coverHeaders;
   static int? _malId;
-  static String? _skipTitle; // anime title for AniSkip (null = no skips)
+  static String? _skipTitle;
+  static String? _skipImdbId;
+  static int? _skipTmdbId;
+  static bool _skipIsTv = false;
   static TvPlaybackTracker? _tracker;
   static List<SubtitleSearchResult> _subResults =
       const []; // last online search
@@ -99,6 +103,9 @@ class TvNativePlayer {
     String? showTitle,
     String? cover,
     Map<String, String>? coverHeaders,
+    String? loadingArtwork,
+    String? loadingLogo,
+    void Function()? onOpeningPlayer,
     String category = 'sub',
     List<String> availableCategories = const [],
     int? malId,
@@ -128,6 +135,9 @@ class TvNativePlayer {
     _coverHeaders = coverHeaders;
     _malId = malId;
     _skipTitle = scrobbleTitle;
+    _skipImdbId = imdbId;
+    _skipTmdbId = tmdbId;
+    _skipIsTv = tmdbIsTv;
     _category = category;
     _resume = resume;
     _tracker = TvPlaybackTracker(
@@ -218,10 +228,23 @@ class TvNativePlayer {
       );
     }
 
+    final startupArtwork = [
+      ep.thumbnail,
+      loadingArtwork,
+      cover,
+    ].whereType<String>().where((url) => url.trim().isNotEmpty).firstOrNull;
+    onOpeningPlayer?.call();
     final launch = _ch.invokeMapMethod<String, dynamic>('launch', {
       ..._streamPayload(src, mark?.position.inMilliseconds ?? 0),
       'url': playUrl, // torrent → local stream URL; otherwise unchanged
       'title': _showTitle,
+      'loadingArtwork': startupArtwork,
+      'loadingLogo': ?loadingLogo,
+      'loadingArtworkHeaders': ?playbackArtworkHeaders(
+        startupArtwork,
+        cover,
+        coverHeaders,
+      ),
       'episodeLabel': _episodeLabel(ep),
       'episodeLabels': [for (final e in _episodes) _episodeLabel(e)],
       'episodeCount': episodes.length,
@@ -486,21 +509,32 @@ class TvNativePlayer {
           return const <Map>[];
         }
       case 'skipsFor':
-        // AniSkip intro/outro intervals for the current episode (anime only).
         final args = (call.arguments as Map).cast<String, dynamic>();
         final index = (args['index'] as num?)?.toInt() ?? -1;
         final durMs = (args['durationMs'] as num?)?.toInt() ?? 0;
-        if (_skipTitle == null || index < 0 || index >= _episodes.length) {
+        if (index < 0 || index >= _episodes.length) {
           return const <Map>[];
         }
         final ep = _episodes[index];
         final epNo = ep.number?.toInt() ?? (index + 1);
         try {
-          final skips = await sl<SkipService>().skipTimes(
-            title: _skipTitle!,
-            episode: epNo,
-            duration: Duration(milliseconds: durMs),
-          );
+          final service = sl<SkipService>();
+          final duration = Duration(milliseconds: durMs);
+          final title = _skipTitle;
+          final skips = title != null
+              ? await service.skipTimes(
+                  title: title,
+                  episode: epNo,
+                  duration: duration,
+                )
+              : await service.introDbTimes(
+                  imdbId: _skipImdbId,
+                  tmdbId: _skipTmdbId,
+                  isTv: _skipIsTv,
+                  season: ep.season,
+                  episode: ep.number,
+                  duration: duration,
+                );
           return [
             for (final s in skips)
               {

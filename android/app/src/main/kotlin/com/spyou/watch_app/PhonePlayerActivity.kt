@@ -6,6 +6,7 @@ import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Matrix
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
@@ -30,6 +31,8 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
+import androidx.media3.common.text.Cue
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -38,6 +41,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.spyou.watch_app.cast.CastManager
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
@@ -61,6 +65,7 @@ class PhonePlayerActivity : Activity() {
 
     companion object {
         private const val TAG = "PhonePlayer"
+        private const val ROTATION_PULL_DISTANCE_DP = 64
 
         internal fun megaSkipTarget(position: Long, duration: Long, seconds: Int): Long? {
             if (duration <= 0) return null
@@ -83,9 +88,8 @@ class PhonePlayerActivity : Activity() {
     private lateinit var loadingTitle: android.widget.TextView
     private lateinit var loadingEpisode: android.widget.TextView
     private lateinit var loadingStatus: android.widget.TextView
-    private lateinit var loadingSpinner: View
     private lateinit var loadingActions: View
-    private var backdropRequested = false
+    private lateinit var loadingTitlePulse: PlaybackTitlePulse
 
     private val resolveTimeout = Runnable {
         if (switching) {
@@ -103,6 +107,7 @@ class PhonePlayerActivity : Activity() {
     private lateinit var quickActions: ViewGroup
     private lateinit var btnPlay: android.widget.ImageView
     private lateinit var seek: android.widget.SeekBar
+    private lateinit var seekPreview: PhoneSeekPreview
     private lateinit var timeText: android.widget.TextView
     private lateinit var titleText: android.widget.TextView
     private lateinit var episodeText: android.widget.TextView
@@ -117,7 +122,11 @@ class PhonePlayerActivity : Activity() {
     // (accumulating, with a transient label); horizontal swipe scrubs with a
     // time bubble; vertical swipe left/right adjusts brightness/volume with a
     // Netflix-style HUD; pinch zooms the TextureView (1–4x, pans when zoomed).
-    private var gestureMode = 0 // 0 idle, 1 horizontal scrub, 2 vertical slide
+    private var gestureMode = 0 // 0 idle, 1 horizontal scrub, 2 vertical slide, 3 rotate
+    private var singleFingerRotation = false
+    private var rotationDownX = 0f
+    private var rotationDownY = 0f
+    private var speedBeforeHold: PlaybackParameters? = null
     private var downX = 0f
     private var downY = 0f
     private var hSeekBase = 0L
@@ -151,6 +160,10 @@ class PhonePlayerActivity : Activity() {
     private lateinit var hudBar: ProgressBar
     private lateinit var hudLabel: TextView
     private lateinit var seekBubble: TextView
+    private lateinit var holdSpeedBadge: TextView
+    private lateinit var rotationPullHint: LinearLayout
+    private lateinit var rotationPullArrow: TextView
+    private lateinit var rotationPullProgress: ProgressBar
     private lateinit var dblLeft: TextView
     private lateinit var dblRight: TextView
 
@@ -168,6 +181,32 @@ class PhonePlayerActivity : Activity() {
             handler.postDelayed(this, 250L)
         }
     }
+
+    private data class SkipSegment(val start: Long, val end: Long, val label: Int, val auto: Boolean)
+
+    private lateinit var segmentButton: FrameLayout
+    private lateinit var segmentLabel: TextView
+    private lateinit var segmentFill: TextView
+    private var segmentProgress = 0
+    private val segmentTimer by lazy {
+        android.animation.ValueAnimator.ofInt(0, 10_000).apply {
+            duration = 10_000L
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener {
+                val progress = it.animatedValue as Int
+                segmentProgress = progress
+                updateSegmentFill()
+                if (progress == 10_000 && !segmentControlsVisible()) {
+                    segmentButton.visibility = View.GONE
+                }
+            }
+        }
+    }
+    private var activeSegment: SkipSegment? = null
+    private var skipSegments = emptyList<SkipSegment>()
+    private var showSegmentButton = false
+    private var skipsRequested = false
+    private val autoSkipped = mutableSetOf<Long>()
 
     private var currentIndex = 0
     // The selected episode can change while the previous stream is still loaded.
@@ -202,14 +241,27 @@ class PhonePlayerActivity : Activity() {
     private var mediaGeneration = 0
     private var failoverInFlight = false
     private var engineFallbackRequested = false
+    private val pip by lazy { PipController(this) }
+    private var autoPipEnabled = false
     private var currentUrl = ""
     private val attemptedUrls = mutableSetOf<String>()
+    private var refreshedForbiddenLinks = false
     private var autoplayNext = true
+    private var ambientEnabled = true
     private var seekMs = 10_000L
     private var megaSkipEnabled = true
     private var megaSkipSeconds = 85
     private var keepScreenOn = true
     private var subtitlePreference = ""
+    private var subtitleScale = 1f
+    private var subtitlePosition = 95
+    private var subtitleBackground = android.graphics.Color.TRANSPARENT
+    private var subtitleForeground = android.graphics.Color.WHITE
+    private var subtitleEdgeType = CaptionStyleCompat.EDGE_TYPE_OUTLINE
+    private var subtitleEdgeColor = android.graphics.Color.BLACK
+    private var subtitleFontPath: String? = null
+    private var subtitleTypeface: android.graphics.Typeface? = null
+    private var subtitleStyleDialog: android.app.Dialog? = null
     private var subtitlePreferenceApplied = false
     private var pendingAddonSubtitleId: String? = null
     private var currentSourceFactory: DefaultMediaSourceFactory? = null
@@ -228,6 +280,7 @@ class PhonePlayerActivity : Activity() {
     private var mirrors: List<Map<String, Any?>> = emptyList()
     private var castManager: CastManager? = null
     private var castSupported = false
+    private var episodePanel: PhoneEpisodePanel? = null
     private var moreDialog: android.app.Dialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -236,6 +289,16 @@ class PhonePlayerActivity : Activity() {
         megaSkipEnabled = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_MEGA_SKIP, true)
         megaSkipSeconds = intent.getIntExtra(PhonePlayerIntent.EXTRA_MEGA_SKIP_SECONDS, 85).coerceIn(5, 180)
         keepScreenOn = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_KEEP_SCREEN_ON, true)
+        autoPipEnabled = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_AUTO_PIP, false)
+        pip.onControl = { control ->
+            when (control) {
+                PipController.PLAY_PAUSE -> togglePlay()
+                PipController.REWIND -> player?.seekTo(((player?.currentPosition ?: 0L) - 10_000L).coerceAtLeast(0L))
+                PipController.FORWARD -> player?.seekTo((player?.currentPosition ?: 0L) + 10_000L)
+            }
+        }
+        pip.autoEnter = autoPipEnabled
+        pip.register()
         sessionId = intent.getLongExtra(PhonePlayerIntent.EXTRA_SESSION, 0L)
         playerOrientation = when (intent.getStringExtra(PhonePlayerIntent.EXTRA_ORIENTATION)) {
             "portrait" -> "portrait"
@@ -271,13 +334,54 @@ class PhonePlayerActivity : Activity() {
         setContentView(R.layout.phone_player)
         playerView = findViewById(R.id.player_view)
         playerView.keepSubtitlesInViewport()
+        fun label(color: Int) = TextView(this).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(44)
+            setPadding(dp(14), 0, dp(14), 0)
+            textSize = 13f
+            setTextColor(color)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        segmentLabel = label(android.graphics.Color.WHITE)
+        segmentFill = label(android.graphics.Color.BLACK).apply {
+            setBackgroundColor(android.graphics.Color.WHITE)
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateSegmentFill() }
+        }
+        segmentButton = FrameLayout(this).apply {
+            visibility = View.GONE
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xC2000000.toInt())
+                cornerRadius = dp(22).toFloat()
+            }
+            clipToOutline = true
+            isFocusable = true
+            addView(segmentLabel, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ))
+            addView(segmentFill, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+            ))
+            setOnClickListener {
+                val segment = activeSegment ?: return@setOnClickListener
+                autoSkipped.add(segment.start)
+                player?.seekTo(segment.end)
+                updateSegmentButton(null)
+            }
+        }
+        val stage = findViewById<FrameLayout>(R.id.player_root)
+        stage.addView(segmentButton, stage.indexOfChild(findViewById<View>(R.id.loading)), FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.END,
+        ).apply {
+            marginEnd = dp(16)
+            bottomMargin = dp(56)
+        })
         loading = findViewById(R.id.loading)
         loadingOverlay = findViewById(R.id.loading_overlay)
         loadingBackdrop = findViewById(R.id.loading_backdrop)
         loadingTitle = findViewById(R.id.loading_title)
         loadingEpisode = findViewById(R.id.loading_episode)
         loadingStatus = findViewById(R.id.loading_status)
-        loadingSpinner = findViewById(R.id.loading_spinner)
         loadingActions = findViewById(R.id.loading_actions)
         findViewById<View>(R.id.btn_loading_retry).setOnClickListener {
             switching = false
@@ -286,7 +390,24 @@ class PhonePlayerActivity : Activity() {
         findViewById<View>(R.id.btn_loading_back).setOnClickListener { finish() }
         loadingTitle.text = intent.getStringExtra(PhonePlayerIntent.EXTRA_TITLE) ?: ""
         loadingEpisode.text = intent.getStringExtra(PhonePlayerIntent.EXTRA_EP_LABEL) ?: ""
-        loadBackdrop()
+        loadingTitlePulse = findViewById(R.id.loading_title_pulse)
+        val loadingLogoUrl = intent.getStringExtra("loadingLogo")
+        loadingTitlePulse.startPulse()
+        val artworkHeaders = PhonePlayerIntent.headersFromArray(
+            intent.getStringArrayExtra("loadingArtworkHeaders"),
+        ).orEmpty()
+        loadingBackdrop.loadPlaybackArtwork(
+            intent.getStringExtra("loadingArtwork"),
+            artworkHeaders,
+        )
+        val logo = findViewById<android.widget.ImageView>(R.id.loading_logo)
+        logo.loadPlaybackArtwork(loadingLogoUrl) {
+            if (loadingOverlay.visibility != View.VISIBLE || loadingActions.visibility == View.VISIBLE) return@loadPlaybackArtwork
+            logo.contentDescription = loadingTitle.text
+            logo.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            logo.visibility = View.VISIBLE
+            loadingTitle.visibility = View.GONE
+        }
         controls = findViewById(R.id.controls)
         quickActions = findViewById(R.id.quick_actions)
         btnPlay = findViewById(R.id.btn_play)
@@ -304,9 +425,19 @@ class PhonePlayerActivity : Activity() {
         episodeCount = intent.getIntExtra(PhonePlayerIntent.EXTRA_EP_COUNT, 1)
         episodeLabels = intent.getStringArrayExtra(PhonePlayerIntent.EXTRA_EP_LABELS) ?: emptyArray()
         autoplayNext = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_AUTOPLAY_NEXT, true)
+        ambientEnabled = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_AMBIENT_ENABLED, true)
         seekMs = (intent.getIntExtra(PhonePlayerIntent.EXTRA_SEEK_SECONDS, 10) * 1000L)
             .coerceAtLeast(1_000L)
         subtitlePreference = intent.getStringExtra(PhonePlayerIntent.EXTRA_SUB_PREFERENCE).orEmpty()
+        subtitleScale = intent.getFloatExtra(PhonePlayerIntent.EXTRA_SUB_SCALE, 1f)
+        subtitlePosition = intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_POSITION, 95)
+        subtitleBackground = intent.getIntExtra(
+            PhonePlayerIntent.EXTRA_SUB_BG_COLOR, android.graphics.Color.TRANSPARENT,
+        )
+        subtitleForeground = intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_FG, android.graphics.Color.WHITE)
+        subtitleEdgeType = intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_EDGE_TYPE, CaptionStyleCompat.EDGE_TYPE_OUTLINE)
+        subtitleEdgeColor = intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_EDGE_COLOR, android.graphics.Color.BLACK)
+        updateSubtitleFont(intent.getStringExtra(PhonePlayerIntent.EXTRA_SUB_FONT))
 
         bindWatchInfo()
         updateOrientationLayout()
@@ -336,6 +467,7 @@ class PhonePlayerActivity : Activity() {
         if (!isPortraitCard()) applyFullscreenControls()
         updateEpisodeNavigation()
 
+        seekPreview = PhoneSeekPreview(stage, seek)
         seek.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: android.widget.SeekBar, value: Int, fromUser: Boolean) {
                 if (!fromUser) return
@@ -344,6 +476,7 @@ class PhonePlayerActivity : Activity() {
                     val pos = d * value / 1000
                     timeText.text = if (isPortraitCard()) fmt(pos).padStart(5, '0') + " / " + fmt(d).padStart(5, '0') else fmt(pos) + " / " + fmt(d)
                     sb.contentDescription = getString(R.string.phone_player_desc_seek) + ", " + fmt(pos) + " of " + fmt(d)
+                    if (scrubbing) seekPreview.show(pos, fmt(pos))
                 }
             }
 
@@ -352,10 +485,16 @@ class PhonePlayerActivity : Activity() {
                 // Cancel the auto-hide: a slow scrub must not lose the bar.
                 restoreControls()
                 handler.removeCallbacks(hideRunnable)
+                val duration = player?.duration ?: 0L
+                if (duration > 0) {
+                    val position = duration * sb.progress / 1000
+                    seekPreview.show(position, fmt(position))
+                }
             }
 
             override fun onStopTrackingTouch(sb: android.widget.SeekBar) {
                 scrubbing = false
+                seekPreview.hide()
                 val d = player?.duration ?: 0L
                 if (d > 0) player?.seekTo(d * sb.progress / 1000)
                 bumpControls()
@@ -365,6 +504,18 @@ class PhonePlayerActivity : Activity() {
         val taps = android.view.GestureDetector(
             this,
             object : android.view.GestureDetector.SimpleOnGestureListener() {
+                override fun onLongPress(e: MotionEvent) {
+                    if (controlsLocked || gestureMode != 0 || pinchActive ||
+                        !intent.getBooleanExtra(PhonePlayerIntent.EXTRA_HOLD_SPEED, true)
+                    ) return
+                    val p = player ?: return
+                    if (!p.playWhenReady) return
+                    val previous = p.playbackParameters
+                    speedBeforeHold = previous
+                    p.playbackParameters = PlaybackParameters(2f, previous.pitch)
+                    holdSpeedBadge.visibility = View.VISIBLE
+                }
+
                 override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
                     if (controls.visibility == View.VISIBLE) hideControls() else showControls()
                     return true
@@ -420,30 +571,10 @@ class PhonePlayerActivity : Activity() {
         player = exo
         playerView.player = exo
         playerView.subtitleView?.apply {
-            setStyle(
-                androidx.media3.ui.CaptionStyleCompat(
-                    intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_FG, android.graphics.Color.WHITE),
-                    intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_BG_COLOR, android.graphics.Color.TRANSPARENT),
-                    android.graphics.Color.TRANSPARENT, // window colour: never drawn
-                    intent.getIntExtra(
-                        PhonePlayerIntent.EXTRA_SUB_EDGE_TYPE,
-                        androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                    ),
-                    intent.getIntExtra(
-                        PhonePlayerIntent.EXTRA_SUB_EDGE_COLOR,
-                        android.graphics.Color.BLACK,
-                    ),
-                    intent.getStringExtra(PhonePlayerIntent.EXTRA_SUB_FONT)
-                        ?.let { runCatching { android.graphics.Typeface.createFromFile(it) }.getOrNull() },
-                ),
-            )
-            // FRACTION_TEXT_SIZE, not absolute: the same setting has to read
-            // the same on a small phone and a tablet.
-            setFractionalTextSize(0.0533f * intent.getFloatExtra(PhonePlayerIntent.EXTRA_SUB_SCALE, 1f))
             setApplyEmbeddedStyles(false)
             setApplyEmbeddedFontSizes(false)
-            invalidate()
         }
+        applySubtitleStyle()
         exo.playbackParameters =
             PlaybackParameters(intent.getFloatExtra(PhonePlayerIntent.EXTRA_SPEED, 1f))
 
@@ -453,9 +584,16 @@ class PhonePlayerActivity : Activity() {
                 sendDiscordPresence()
                 PhonePlayerBridge.channel?.invokeMethod(
                     "playbackStarted",
-                    mapOf("index" to currentIndex),
+                    mapOf("index" to currentIndex, "sessionId" to sessionId),
                 )
                 hideLoading()
+            }
+
+            // Force cues onto the user's vertical Position (0=top … 100=bottom).
+            // Bottom padding alone can't do this: most VTT/SRT cues set their
+            // own line and ignore it. Same helper the TV player uses.
+            override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
+                renderSubtitleCues(cueGroup.cues)
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -505,7 +643,10 @@ class PhonePlayerActivity : Activity() {
             override fun onPlayerError(error: PlaybackException) {
                 playbackError = true
                 setBuffering(false)
-                failover()
+                val forbidden = generateSequence<Throwable>(error) { it.cause }
+                    .filterIsInstance<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()
+                    .any { it.responseCode == 403 }
+                failover(forbidden)
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -513,6 +654,11 @@ class PhonePlayerActivity : Activity() {
                 updateKeepScreenOn()
                 syncPlayIcon()
                 bumpControls()
+                pip.setState(isPlaying, player?.videoSize?.width ?: 0, player?.videoSize?.height ?: 0)
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                pip.setState(player?.isPlaying == true, videoSize.width, videoSize.height)
             }
         })
 
@@ -534,31 +680,6 @@ class PhonePlayerActivity : Activity() {
         }
     }
 
-    /** Poster behind the status text, so a slow resolve never looks frozen. */
-    private fun loadBackdrop() {
-        if (backdropRequested) return
-        val url = intent.getStringExtra(PhonePlayerIntent.EXTRA_COVER).orEmpty()
-        if (url.isEmpty()) return
-        backdropRequested = true
-        val headers = PhonePlayerIntent.headersFromArray(
-            intent.getStringArrayExtra(PhonePlayerIntent.EXTRA_COVER_HEADERS),
-        )
-        Thread {
-            val bitmap = runCatching {
-                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 6_000
-                conn.readTimeout = 6_000
-                for ((k, v) in headers) conn.setRequestProperty(k, v)
-                conn.inputStream.use { android.graphics.BitmapFactory.decodeStream(it) }
-            }.getOrNull()
-            if (bitmap != null) {
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) loadingBackdrop.setImageBitmap(bitmap)
-                }
-            }
-        }.start()
-    }
-
     private fun setLoadingStatus(text: String) {
         loadingStatus.text = text
     }
@@ -572,7 +693,7 @@ class PhonePlayerActivity : Activity() {
         controls.animate().cancel()
         controls.visibility = View.GONE
         loadingOverlay.visibility = View.VISIBLE
-        loadingSpinner.visibility = View.VISIBLE
+        if (loadingActions.visibility == View.VISIBLE) loadingTitlePulse.startPulse()
         loadingActions.visibility = View.GONE
         loadingStatus.visibility = View.VISIBLE
         loadingEpisode.text = episodeLabel ?: episodeText.text
@@ -584,7 +705,8 @@ class PhonePlayerActivity : Activity() {
      *  draws over; hide it while buffering or the morph reads as one blob. */
     private fun setBuffering(visible: Boolean) {
         val busy = visible || (isPortraitCard() && !playbackStarted && loadingActions.visibility != View.VISIBLE)
-        loading.visibility = if (busy) View.VISIBLE else View.GONE
+        loading.visibility =
+            if (busy && loadingOverlay.visibility != View.VISIBLE) View.VISIBLE else View.GONE
         btnPlay.visibility = if (busy) View.INVISIBLE else View.VISIBLE
     }
 
@@ -592,6 +714,7 @@ class PhonePlayerActivity : Activity() {
         handler.removeCallbacks(resolveTimeout)
         handler.removeCallbacks(startTimeout)
         loadingOverlay.visibility = View.GONE
+        loadingTitlePulse.stopPulse()
         setBuffering(false)
         everPlayed = true
     }
@@ -600,10 +723,10 @@ class PhonePlayerActivity : Activity() {
         handler.removeCallbacks(resolveTimeout)
         handler.removeCallbacks(startTimeout)
         loadingOverlay.visibility = View.VISIBLE
-        loadingSpinner.visibility = View.GONE
         loadingStatus.visibility = View.VISIBLE
         setLoadingStatus(message)
         loadingActions.visibility = View.VISIBLE
+        loadingTitlePulse.stopPulse()
         setBuffering(false)
     }
 
@@ -788,6 +911,10 @@ class PhonePlayerActivity : Activity() {
     })
 
     private fun setControlsLocked(locked: Boolean) {
+        if (locked) {
+            restoreSpeedAfterHold()
+            updateSegmentButton(null)
+        }
         controlsLocked = locked
         if (unlockControl == null) {
             val column = LinearLayout(this).apply {
@@ -845,8 +972,11 @@ class PhonePlayerActivity : Activity() {
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
+        restoreSpeedAfterHold()
+        resetRotationPull(animate = false)
         super.onConfigurationChanged(newConfig)
         moreDialog?.dismiss()
+        episodePanel?.dismiss()
         watchPage = newConfig.orientation == Configuration.ORIENTATION_PORTRAIT
         updateOrientationLayout()
         inflateQuickActions()
@@ -928,22 +1058,40 @@ class PhonePlayerActivity : Activity() {
         val portrait =
             resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
         val video = findViewById<View>(R.id.player_root)
-        findViewById<View>(R.id.watch_root).setBackgroundColor(if (portrait && watchPage) android.graphics.Color.BLACK else getColor(R.color.phone_player_background))
+        val root = findViewById<View>(R.id.watch_root)
         if (portrait && watchPage) {
-            // 16:9 stage as an inset rounded card (MPV mini-player).
+            // Reattach the glow if a previous layout pass flattened it to black;
+            // a fresh page starts unfaded. Off (ambientEnabled == false) stays
+            // plain black and never (re)starts sampling.
+            val ambient = if (ambientEnabled) ambientLayer else null
+            if (ambient != null) {
+                ambientDrawable?.alpha = 255
+                ambientInfoDrawable?.alpha = 255
+                root.background = ambient
+            } else {
+                root.setBackgroundColor(android.graphics.Color.BLACK)
+                // applyAmbientColors only ever SETS this background from the
+                // sampling loop — stopping that loop leaves whatever glow it
+                // last painted here, so clear it explicitly.
+                watchPanel?.header?.background = null
+            }
+            val edgeToEdge = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_PORTRAIT_VIDEO_EDGE_TO_EDGE, false)
             val w = resources.displayMetrics.widthPixels
-            val m = dp(12)
+            val m = if (edgeToEdge) 0 else dp(12)
             video.layoutParams = video.layoutParams.apply {
                 height = minOf((w - 2 * m) * 9 / 16, (resources.displayMetrics.heightPixels * .38f).toInt()).coerceAtLeast(1)
                 if (this is android.widget.LinearLayout.LayoutParams) {
                     setMargins(m, dp(4), m, 0)
                 }
             }
-            video.background = getDrawable(R.drawable.phone_player_video_card)
-            video.clipToOutline = true
+            if (edgeToEdge) video.setBackgroundColor(android.graphics.Color.BLACK)
+            else video.background = getDrawable(R.drawable.phone_player_video_card)
+            video.clipToOutline = !edgeToEdge
             val info = ensureWatchInfo()
             info?.visibility = View.VISIBLE
+            if (ambientEnabled) startAmbient()
         } else {
+            root.setBackgroundColor(getColor(R.color.phone_player_background))
             val lp = video.layoutParams
             lp.height = ViewGroup.LayoutParams.MATCH_PARENT
             if (lp is android.widget.LinearLayout.LayoutParams) {
@@ -953,6 +1101,7 @@ class PhonePlayerActivity : Activity() {
             video.background = null
             video.clipToOutline = false
             watchInfo?.visibility = View.GONE
+            stopAmbient()
         }
         val topScrim = controls.findViewById<View>(R.id.top_scrim)
         topScrim.setBackgroundResource(if (portrait && watchPage)
@@ -1058,14 +1207,11 @@ class PhonePlayerActivity : Activity() {
         val radius = seek.thumb.intrinsicWidth / 2
         seek.setPadding(radius, dp(if (mini) 7 else 6), radius, dp(if (mini) 7 else 6))
         seek.thumbOffset = radius
-        if (mini) {
-            val accent = intent.getIntExtra(PhonePlayerIntent.EXTRA_ACCENT, getColor(R.color.phone_player_accent))
-            seek.thumbTintList = android.content.res.ColorStateList.valueOf(accent)
-            seek.progressTintList = android.content.res.ColorStateList.valueOf(accent)
-        } else {
-            seek.thumbTintList = null
-            seek.progressTintList = null
-        }
+        val accent = ColorStateList.valueOf(
+            intent.getIntExtra(PhonePlayerIntent.EXTRA_ACCENT, getColor(R.color.phone_player_accent)),
+        )
+        seek.thumbTintList = accent
+        seek.progressTintList = accent
         val timeRow = timeText.parent as ViewGroup
         val bar = bottomBar as ViewGroup
         bar.removeView(timeRow)
@@ -1106,11 +1252,6 @@ class PhonePlayerActivity : Activity() {
         if (mini) {
             timeText.setTextColor(android.graphics.Color.WHITE)
             timeText.text = fmt(player?.currentPosition ?: 0L).padStart(5, '0') + " / " + fmt((player?.duration ?: 0L).coerceAtLeast(0L)).padStart(5, '0')
-            if (loadingOverlay.visibility == View.VISIBLE && loadingActions.visibility != View.VISIBLE) {
-                loadingOverlay.visibility = View.GONE
-                controls.visibility = View.VISIBLE
-                setBuffering(!playbackStarted)
-            }
         }
     }
 
@@ -1141,11 +1282,164 @@ class PhonePlayerActivity : Activity() {
         refreshWatchInfo()
     }
 
+    private var ambientHandler: android.os.Handler? = null
+    private var ambientDrawable: android.graphics.drawable.GradientDrawable? = null
+    private var ambientLayer: android.graphics.drawable.LayerDrawable? = null
+    private var ambientInfoDrawable: android.graphics.drawable.GradientDrawable? = null
+    private var ambientAnimator: android.animation.ValueAnimator? = null
+    private var ambientTopColor = android.graphics.Color.BLACK
+    private var ambientBottomColor = android.graphics.Color.BLACK
+    private var ambientReady = false
+    private val ambientRunnable = object : Runnable {
+        override fun run() {
+            if (!uiAlive() || watchInfo == null) return
+            // A paused picture never changes — resampling it only burns
+            // battery for identical colors (mpv's sampler does the same).
+            if (player?.isPlaying != true && ambientReady) {
+                ambientHandler?.postDelayed(this, 6_000L)
+                return
+            }
+            // A tiny grab is enough to average a color from — no need for a
+            // full-resolution frame just to collapse it to one swatch. The
+            // crop drops letterbox bars so the average is the picture, not
+            // the black around it (mpv screenshots the frame, not the view).
+            val view = textureView()
+            val vw = view?.width ?: 0
+            val vh = view?.height ?: 0
+            val frame = if (view != null && vw > 0 && vh > 0) {
+                runCatching { view.getBitmap(32, (32 * vh / vw).coerceAtLeast(1)) }.getOrNull()
+            } else null
+            if (frame != null) {
+                // Letterbox bars only exist in FIT mode — in FILL/ZOOM the
+                // video already covers the view, so cropping as if there
+                // were bars would sample the wrong sub-rect.
+                val vs = if (playerView.resizeMode == AspectRatioFrameLayout.RESIZE_MODE_FIT) {
+                    player?.videoSize
+                } else null
+                val r = videoSampleRect(frame.width, frame.height, vs?.width ?: 0, vs?.height ?: 0)
+                val cropped = if (r[0] != 0 || r[1] != 0 || r[2] != frame.width || r[3] != frame.height) {
+                    runCatching { android.graphics.Bitmap.createBitmap(frame, r[0], r[1], r[2], r[3]) }.getOrNull()
+                } else null
+                val (top, bottom) = ambientGlowColor(cropped ?: frame)
+                cropped?.recycle()
+                frame.recycle()
+                val lum = (((top shr 16) and 0xFF) + ((top shr 8) and 0xFF) + (top and 0xFF) +
+                    ((bottom shr 16) and 0xFF) + ((bottom shr 8) and 0xFF) + (bottom and 0xFF)) / 6
+                // A fully unreadable grab must not paint an existing glow away.
+                if (lum >= 28 || !ambientReady) applyAmbientColors(top, bottom)
+            }
+            ambientHandler?.postDelayed(this, 6_000L)
+        }
+    }
+
+    /**
+     * mpv's two pieces: a radial glow bounded to just the top strip
+     * (status bar through the end of the video card), plus a linear
+     * wash on the header row below it. The strip is hard-bounded via a
+     * LayerDrawable inset over a black base, same as mpv's own Positioned
+     * box — nothing paints past it, so a corner like the card's rounded
+     * bottom never picks up a residual tint (a GradientDrawable paints its
+     * edge color flat everywhere past its radius; unbounded, that leaked
+     * into the card's corners and made their curve visible). The hot
+     * center sits inside the video card so the brightest ring is hidden
+     * behind the opaque video, and the header's starting alpha is
+     * computed to exactly continue the radial's tail at the boundary.
+     * Colors crossfade over 900ms, same pace as mpv's AnimatedSwitcher.
+     */
+    private fun applyAmbientColors(newTop: Int, newBottom: Int) {
+        val root = findViewById<View>(R.id.watch_root)
+        val card = findViewById<View>(R.id.player_root)
+        if (root.height <= 0 || card.height <= 0) return
+        val stripHeight = (card.bottom + dp(4)).coerceAtMost(root.height)
+        val radius = 1.4f * minOf(root.width, stripHeight).toFloat()
+        val centerYPx = card.top + card.height * 0.8f
+        val drawable = ambientDrawable ?: android.graphics.drawable.GradientDrawable().also {
+            it.gradientType = android.graphics.drawable.GradientDrawable.RADIAL_GRADIENT
+            ambientDrawable = it
+        }
+        val layer = ambientLayer ?: android.graphics.drawable.LayerDrawable(arrayOf(
+            android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK), drawable,
+        )).also { ambientLayer = it }
+        layer.setLayerInset(1, 0, 0, 0, (root.height - stripHeight).coerceAtLeast(0))
+        // updateOrientationLayout may have replaced the background with a
+        // flat color; reattach so the glow survives rotation.
+        root.background = layer
+        // The inset shrinks the radial's own bounds to the strip, so its
+        // center fraction has to be measured against stripHeight, not
+        // root.height — otherwise it lands in the wrong place.
+        drawable.setGradientCenter(0.5f, (centerYPx / stripHeight).coerceIn(0f, 1f))
+        drawable.gradientRadius = radius
+        // GradientDrawable interpolates linearly from the center color to
+        // the edge color over [0, radius] — same math here, so this is
+        // exactly what the radial itself renders at the boundary, not a
+        // guess.
+        val edgeFraction = ((stripHeight - centerYPx).coerceAtLeast(0f) / radius).coerceIn(0f, 1f)
+        val headerStartAlpha = (166 + (64 - 166) * edgeFraction + 0.5f).toInt().coerceIn(0, 255)
+        val info = ambientInfoDrawable ?: android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0, 0, 0),
+        ).also { ambientInfoDrawable = it }
+        watchPanel?.header?.background = info
+        val fromTop = ambientTopColor
+        val fromBottom = ambientBottomColor
+        val evaluator = android.animation.ArgbEvaluator()
+        ambientAnimator?.cancel()
+        ambientAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 900L
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val t = evaluator.evaluate(f, fromTop, newTop) as Int
+                val b = evaluator.evaluate(f, fromBottom, newBottom) as Int
+                drawable.setColors(intArrayOf(withAlpha(b, 166), withAlpha(t, 64)))
+                info.setColors(intArrayOf(
+                    withAlpha(b, headerStartAlpha),
+                    withAlpha(b, headerStartAlpha / 2),
+                    withAlpha(b, 0),
+                ))
+                // Track what's actually on screen, not the target — a tick
+                // landing mid-crossfade must resume from here, not snap.
+                ambientTopColor = t
+                ambientBottomColor = b
+            }
+            start()
+        }
+        ambientReady = true
+    }
+
+    /** Fades the glow out over the same 180dp of scroll mpv's watch page
+     * uses, so it reads as a smooth dissolve into the list instead of an
+     * episode row abruptly scrolling over a still-fully-lit background. */
+    private fun installAmbientScrollFade(rv: androidx.recyclerview.widget.RecyclerView) {
+        val fadeDistance = dp(180)
+        rv.addOnScrollListener(object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: androidx.recyclerview.widget.RecyclerView, dx: Int, dy: Int) {
+                val offset = recyclerView.computeVerticalScrollOffset()
+                val fraction = (1f - offset.toFloat() / fadeDistance).coerceIn(0f, 1f)
+                ambientDrawable?.alpha = (fraction * 255).toInt()
+                ambientInfoDrawable?.alpha = (fraction * 255).toInt()
+            }
+        })
+    }
+
+    private fun startAmbient() {
+        if (ambientHandler != null) return
+        ambientHandler = handler
+        handler.post(ambientRunnable)
+    }
+
+    private fun stopAmbient() {
+        ambientHandler?.removeCallbacks(ambientRunnable)
+        ambientHandler = null
+        ambientAnimator?.cancel()
+        ambientAnimator = null
+    }
+
     private fun ensureWatchInfo(): ViewGroup? {
         watchInfo?.let { return it }
         val stub = findViewById<ViewStub>(R.id.watch_info_stub) ?: return null
         val inflated = stub.inflate() as? androidx.recyclerview.widget.RecyclerView ?: return null
         watchInfo = inflated
+        installAmbientScrollFade(inflated)
         val panel = PhoneWatchPage(inflated, PhonePlayerBridge.watchDataFor(sessionId), episodeLabels,
             intent.getIntExtra(PhonePlayerIntent.EXTRA_ACCENT, getColor(R.color.phone_player_accent)),
             { fullscreenIcon(it)?.constantState?.newDrawable(resources)?.mutate() }) { index ->
@@ -1321,10 +1615,15 @@ class PhonePlayerActivity : Activity() {
     ) {
         val p = player ?: return
         p.pause()
+        if (loadedEpisodeIndex != currentIndex) autoSkipped.clear()
+        skipsRequested = false
+        skipSegments = emptyList()
+        updateSegmentButton(null)
         playbackStarted = false
         subtitlePreferenceApplied = false
         pendingAddonSubtitleId = null
         currentUrl = url
+        seekPreview.setSource(url, headers)
         attemptedUrls.add(url)
         val httpFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
@@ -1368,17 +1667,27 @@ class PhonePlayerActivity : Activity() {
     }
 
     private fun showEpisodeMenu() {
-        if (isMovie) return
-        if (episodeLabels.isEmpty()) return
-        handler.removeCallbacks(hideRunnable) // a dialog must not race the auto-hide
-        PhonePlayerSheet(this)
-            .setTitle(getString(R.string.phone_player_title_episodes))
-            .setSingleChoiceItems(episodeLabels, currentIndex) { dialog, which ->
-                dialog.dismiss()
-                if (which != currentIndex) loadEpisode(which)
+        if (isMovie || episodeLabels.isEmpty() || episodePanel?.isShowing == true) return
+        handler.removeCallbacks(hideRunnable)
+        val episodes = watchPanel?.episodes
+            ?: PhoneWatchEpisode.from(PhonePlayerBridge.watchDataFor(sessionId), episodeLabels)
+        episodePanel = PhoneEpisodePanel(
+            this, episodes, currentIndex,
+            intent.getStringExtra(PhonePlayerIntent.EXTRA_COVER).orEmpty(),
+            PhonePlayerIntent.headersFromArray(intent.getStringArrayExtra(PhonePlayerIntent.EXTRA_COVER_HEADERS)),
+            intent.getIntExtra(PhonePlayerIntent.EXTRA_ACCENT, getColor(R.color.phone_player_accent)),
+            ::loadEpisode,
+        ).apply {
+            setOnDismissListener {
+                episodePanel = null
+                bumpControls()
             }
-            .setOnDismissListener { bumpControls() }
-            .showForPlayer()
+            show()
+            if (!isPortraitCard()) {
+                window?.decorView?.systemUiVisibility =
+                    this@PhonePlayerActivity.window.decorView.systemUiVisibility
+            }
+        }
     }
 
     /** Ask Dart for [index]'s stream, then play it. */
@@ -1387,11 +1696,13 @@ class PhonePlayerActivity : Activity() {
         resetZoom()
         val generation = ++mediaGeneration
         attemptedUrls.clear()
+        refreshedForbiddenLinks = false
         val ch = PhonePlayerBridge.channel ?: return
         val p = player
         sendProgress()
         p?.pause() // don't leave the old episode running under the spinner
         playbackStarted = false
+        updateSegmentButton(null)
         handler.removeCallbacks(startTimeout)
         switching = true
         if (!everPlayed) {
@@ -1477,37 +1788,51 @@ class PhonePlayerActivity : Activity() {
     private fun showSourceMenu() {
         val ch = PhonePlayerBridge.channel ?: return
         handler.removeCallbacks(hideRunnable)
-        setBuffering(true)
+        // A tap mid-load otherwise showed nothing until the stream itself
+        // started — this request queues behind that same in-flight resolve
+        // on the JS engine's one-at-a-time lane (see sourcesFor on the Dart
+        // side), so a plain spinner-only wait looked like the tap did
+        // nothing. Open feedback immediately instead of waiting on it.
+        val index = currentIndex
+        val generation = mediaGeneration
+        var canceled = false
+        val waiting = android.app.AlertDialog.Builder(this, R.style.PhonePlayerDialog)
+            .setMessage(R.string.phone_player_watch_loading_mirrors).create()
+        waiting.setOnCancelListener { canceled = true }
+        waiting.show()
+        PhoneWatchMotion.enter(waiting)
         ch.invokeMethod(
             "sourcesFor",
-            mapOf("index" to currentIndex),
+            mapOf("index" to index, "sessionId" to sessionId),
             object : io.flutter.plugin.common.MethodChannel.Result {
                 override fun success(result: Any?) {
-                    if (!uiAlive()) return
-                    setBuffering(false)
-                    mirrors = mapList(result)
-                    if (mirrors.isEmpty()) {
+                    waiting.dismiss()
+                    if (canceled || !uiAlive() || currentIndex != index || mediaGeneration != generation) return
+                    val choices = mapList(result)
+                    if (choices.isEmpty()) {
                         toast("Couldn't load sources")
                         bumpControls()
                         return
                     }
-                    val labels = mirrors.mapIndexed { i, source ->
+                    val labels = choices.mapIndexed { i, source ->
                         val label = (source["label"] as? String).orEmpty()
                             .ifBlank { "Server ${i + 1}" }
                         val quality = (source["quality"] as? String).orEmpty()
                         if (quality.isEmpty() || label.contains(quality)) label
                         else "$label · $quality"
                     }.toTypedArray()
-                    val selected = mirrors.indexOfFirst { it["url"] == currentUrl }
+                    val selected = choices.indexOfFirst { it["url"] == currentUrl }
                     PhonePlayerSheet(this@PhonePlayerActivity)
                         .setTitle(getString(R.string.phone_player_title_sources))
                         .setSingleChoiceItems(labels, selected) { dialog, which ->
                             dialog.dismiss()
-                            if (which != selected) playMirror(mirrors[which])
+                            if (which != selected && currentIndex == index && mediaGeneration == generation) {
+                                playMirror(choices[which])
+                            }
                         }
                         .setOnDismissListener { bumpControls() }
                         .showForPlayer().listView.setOnItemLongClickListener { _, _, which, _ ->
-                            val url = mirrors.getOrNull(which)?.get("url") as? String
+                            val url = choices.getOrNull(which)?.get("url") as? String
                             if (!url.isNullOrEmpty()) {
                                 val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                 clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Video link", url))
@@ -1518,15 +1843,15 @@ class PhonePlayerActivity : Activity() {
                 }
 
                 override fun error(code: String, msg: String?, details: Any?) {
-                    if (!uiAlive()) return
-                    setBuffering(false)
+                    waiting.dismiss()
+                    if (canceled || !uiAlive() || currentIndex != index || mediaGeneration != generation) return
                     toast("Couldn't load sources")
                     bumpControls()
                 }
 
                 override fun notImplemented() {
-                    if (!uiAlive()) return
-                    setBuffering(false)
+                    waiting.dismiss()
+                    if (canceled || !uiAlive() || currentIndex != index || mediaGeneration != generation) return
                     toast("Couldn't load sources")
                     bumpControls()
                 }
@@ -1534,11 +1859,15 @@ class PhonePlayerActivity : Activity() {
         )
     }
 
-    private fun failover() {
+    private fun failover(forbidden: Boolean = false) {
         if (failoverInFlight || engineFallbackRequested) return
         val channel = PhonePlayerBridge.channel
-        if (!intent.getBooleanExtra(PhonePlayerIntent.EXTRA_AUTO_ENGINE_FALLBACK, false) || channel == null) {
-            failoverMirrors()
+        // A torrent can never play in ExoPlayer — yield to mpv even when the
+        // auto-switch toggle is off. Mirrors Dart isTorrentUrl (magnet: / .torrent).
+        val u = currentUrl.trim().lowercase()
+        val unplayableTorrent = u.startsWith("magnet:") || u.endsWith(".torrent")
+        if ((!intent.getBooleanExtra(PhonePlayerIntent.EXTRA_AUTO_ENGINE_FALLBACK, false) && !unplayableTorrent) || channel == null) {
+            failoverMirrors(forbidden)
             return
         }
         failoverInFlight = true
@@ -1553,7 +1882,7 @@ class PhonePlayerActivity : Activity() {
                 engineFallbackRequested = true
                 finish()
             } else {
-                failoverMirrors()
+                failoverMirrors(forbidden)
             }
         }
         channel.invokeMethod("tryOtherPlayer", mapOf(
@@ -1566,7 +1895,7 @@ class PhonePlayerActivity : Activity() {
         })
     }
 
-    private fun failoverMirrors() {
+    private fun failoverMirrors(forbidden: Boolean, refresh: Boolean = false) {
         if (failoverInFlight) return
         val ch = PhonePlayerBridge.channel ?: run { finish(); return }
         failoverInFlight = true
@@ -1581,7 +1910,7 @@ class PhonePlayerActivity : Activity() {
         val position = player?.currentPosition ?: 0L
         ch.invokeMethod(
             "sourcesFor",
-            mapOf("index" to currentIndex),
+            mapOf("index" to requestedIndex, "sessionId" to sessionId, "refresh" to refresh),
             object : io.flutter.plugin.common.MethodChannel.Result {
                 override fun success(result: Any?) {
                     if (!uiAlive()) return
@@ -1598,7 +1927,10 @@ class PhonePlayerActivity : Activity() {
                         val url = source["url"] as? String
                         url != null && url !in attemptedUrls
                     }
-                    if (next == null) {
+                    if (next == null && forbidden && !refreshedForbiddenLinks) {
+                        refreshedForbiddenLinks = true
+                        failoverMirrors(forbidden, refresh = true)
+                    } else if (next == null) {
                         failoverFailed()
                     } else {
                         playMirror(next, position, generation)
@@ -1800,6 +2132,55 @@ class PhonePlayerActivity : Activity() {
         )
     }
 
+    private fun renderSubtitleCues(cues: List<Cue>) {
+        playerView.subtitleView?.setCues(
+            SubtitleCuePositioning.position(cues, subtitlePosition, 0.0533f * subtitleScale),
+        )
+    }
+
+    private fun applySubtitleStyle() {
+        playerView.subtitleView?.apply {
+            setStyle(CaptionStyleCompat(
+                subtitleForeground,
+                subtitleBackground,
+                android.graphics.Color.TRANSPARENT,
+                subtitleEdgeType,
+                subtitleEdgeColor,
+                subtitleTypeface,
+            ))
+            setFractionalTextSize(0.0533f * subtitleScale)
+        }
+        player?.currentCues?.let { renderSubtitleCues(it.cues) }
+    }
+
+    private fun updateSubtitleFont(path: String?) {
+        if (subtitleFontPath == path) return
+        subtitleFontPath = path
+        subtitleTypeface = path?.let {
+            runCatching { android.graphics.Typeface.createFromFile(it) }.getOrNull()
+        }
+    }
+
+    internal fun updateSubtitleStyle(
+        scale: Float, position: Int, foreground: Int, background: Int,
+        edgeType: Int, edgeColor: Int, fontPath: String?,
+    ) {
+        subtitleScale = scale.coerceIn(0.25f, 5f)
+        subtitlePosition = position.coerceIn(0, 100)
+        subtitleForeground = foreground
+        subtitleBackground = background
+        subtitleEdgeType = edgeType
+        subtitleEdgeColor = edgeColor
+        updateSubtitleFont(fontPath)
+        applySubtitleStyle()
+    }
+
+    private fun showSubtitleStyle() {
+        if (subtitleStyleDialog?.isShowing != true) {
+            subtitleStyleDialog = PhonePlayerBridge.openSubtitleStyle(this)
+        }
+    }
+
     private fun showTracksMenu() {
         val p = player ?: return
         handler.removeCallbacks(hideRunnable)
@@ -1829,11 +2210,6 @@ class PhonePlayerActivity : Activity() {
         // audioPicks[0] ("Auto") sits at this label index; tracks follow.
         val audioBase = labels.size - 1
         val addonSubtitles = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_STREMIO_SUBTITLES, false)
-        if (!addonSubtitles && audioTracks.size + textTracks.size < 2 && versionFor.size <= 1) {
-            toast(getString(R.string.phone_player_toast_no_tracks))
-            bumpControls()
-            return
-        }
         val audioPicks = mutableListOf<TrackSelectionOverride?>(null)
         for ((g, i) in audioTracks) {
             val f = g.getTrackFormat(i)
@@ -1856,6 +2232,9 @@ class PhonePlayerActivity : Activity() {
             labels += "Addon subtitles…"
             versionFor += null
         }
+        val styleRow = labels.size
+        labels += getString(R.string.phone_player_subtitle_style)
+        versionFor += null
         val selectedRows = mutableSetOf<Int>()
         if (categories.size > 1) categories.indexOf(currentCategory).takeIf { it >= 0 }?.let { selectedRows += it }
         val audioIndex = audioTracks.indexOfFirst { (group, index) ->
@@ -1868,6 +2247,10 @@ class PhonePlayerActivity : Activity() {
         PhonePlayerSheet(this)
             .setTitle(getString(R.string.phone_player_title_tracks))
             .setTrackItems(labels.toTypedArray(), audioBase, textBase, selectedRows) { _, which ->
+                if (which == styleRow) {
+                    showSubtitleStyle()
+                    return@setTrackItems
+                }
                 if (which == addonRow) {
                     showAddonSubtitles()
                     return@setTrackItems
@@ -2039,6 +2422,16 @@ class PhonePlayerActivity : Activity() {
         bumpControls()
     }
 
+    /** "Ambient player screen" setting, flipped live from the More menu.
+     * [updateOrientationLayout] already knows how to apply/clear the glow and
+     * start/stop sampling, so re-running it is the whole live-apply step. */
+    private fun toggleAmbient() {
+        ambientEnabled = !ambientEnabled
+        updateOrientationLayout()
+        bumpControls()
+        PhonePlayerBridge.channel?.invokeMethod("setAmbientPlayer", mapOf("value" to ambientEnabled))
+    }
+
     private fun cycleDisplayMode() {
         val modes = intArrayOf(AspectRatioFrameLayout.RESIZE_MODE_FIT,
             AspectRatioFrameLayout.RESIZE_MODE_FILL, AspectRatioFrameLayout.RESIZE_MODE_ZOOM)
@@ -2078,54 +2471,53 @@ class PhonePlayerActivity : Activity() {
 
     private fun showMoreMenu() {
         handler.removeCallbacks(hideRunnable)
-        val labels = mutableListOf(
-            getString(R.string.phone_player_title_speed),
-            getString(R.string.phone_player_title_tracks),
-            getString(R.string.phone_player_title_quality),
-            getString(R.string.phone_player_menu_sources),
-        )
-        val icons = mutableListOf(
-            R.drawable.phone_player_speed,
-            R.drawable.phone_player_tracks,
-            R.drawable.phone_player_quality,
-            R.drawable.phone_player_sources,
-        )
-        val actions = mutableListOf<() -> Unit>(
-            { showSpeedMenu() },
-            { showTracksMenu() },
-            { showQualityMenu() },
-            { showSourceMenu() },
-        )
+        val portrait = isPortraitCard()
+        val portraitShortcuts = setOf("tracks", "sources", "episodes", "rotate")
+        val items = mutableListOf<Triple<String, Int, () -> Unit>>()
+        fun add(label: Int, icon: Int, shortcut: String? = null, action: () -> Unit) {
+            if (shortcut != null) {
+                val duplicate = if (portrait) {
+                    shortcut in portraitShortcuts
+                } else {
+                    val id = controlSpec(shortcut)?.first
+                    id != null && controls.findViewById<View>(id)?.visibility == View.VISIBLE
+                }
+                if (duplicate) return
+            }
+            items += Triple(getString(label), icon, action)
+        }
+
+        add(R.string.phone_player_title_speed, R.drawable.phone_player_speed, "speed") { showSpeedMenu() }
+        add(R.string.phone_player_title_tracks, R.drawable.phone_player_tracks, "tracks") { showTracksMenu() }
+        add(R.string.phone_player_title_quality, R.drawable.phone_player_quality, "quality") { showQualityMenu() }
+        add(R.string.phone_player_menu_sources, R.drawable.phone_player_sources, "sources") { showSourceMenu() }
         if (!isMovie) {
-            labels += getString(R.string.phone_player_menu_episodes)
-            icons += R.drawable.phone_player_episodes
-            actions += { showEpisodeMenu() }
+            add(R.string.phone_player_menu_episodes, R.drawable.phone_player_episodes, "episodes") { showEpisodeMenu() }
         }
-        labels += getString(R.string.phone_player_menu_display)
-        icons += R.drawable.phone_player_display
-        actions += { showDisplayMenu() }
-        labels += getString(R.string.phone_player_menu_rotate)
-        icons += R.drawable.phone_player_rotate
-        actions += { toggleRotation() }
+        add(R.string.phone_player_menu_display, R.drawable.phone_player_display, "fit") { showDisplayMenu() }
+        add(R.string.phone_player_menu_rotate, R.drawable.phone_player_rotate, "rotate") { toggleRotation() }
         if (castSupported) {
-            labels += getString(R.string.phone_player_menu_cast)
-            icons += R.drawable.phone_player_cast
-            actions += { pickCast() }
+            add(R.string.phone_player_menu_cast, R.drawable.phone_player_cast, "cast") { pickCast() }
         }
-        if (!isPortraitCard()) {
-            labels += getString(R.string.phone_player_arrange_controls)
-            icons += android.R.drawable.ic_menu_preferences
-            actions += { showControlArrangement() }
+        if (!portrait) {
+            add(R.string.phone_player_arrange_controls, android.R.drawable.ic_menu_preferences, "settings") {
+                showControlArrangement()
+            }
         }
-        labels += getString(R.string.phone_player_menu_info)
-        icons += R.drawable.phone_player_info
-        actions += { showInfo() }
+        add(R.string.phone_player_menu_switch_player, R.drawable.phone_player_sources) { requestManualSwitch() }
+        val ambientLabel = if (ambientEnabled) R.string.phone_player_menu_ambient_on
+            else R.string.phone_player_menu_ambient_off
+        add(ambientLabel, R.drawable.phone_player_display) { toggleAmbient() }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            add(R.string.phone_player_menu_pip, R.drawable.ic_pip_play) { pip.enter(null) }
+        }
+        add(R.string.phone_player_menu_info, R.drawable.phone_player_info, "info") { showInfo() }
         val dialog = PhonePlayerSheet(this)
-            .setItemIcons(icons)
+            .setItemIcons(items.map { it.second })
             .setTitle(getString(R.string.phone_player_title_more))
-            .setItems(labels.toTypedArray()) { dialog, index ->
+            .setItems(items.map { it.first }.toTypedArray()) { dialog, index ->
                 dialog.dismiss()
-                actions[index]()
+                items[index].third()
             }
             .setOnDismissListener {
                 moreDialog = null
@@ -2133,6 +2525,22 @@ class PhonePlayerActivity : Activity() {
             }
             .showForPlayer()
         moreDialog = dialog
+    }
+
+    /** User-tapped Switch Player — bypasses the auto-fallback toggle. */
+    private fun requestManualSwitch() {
+        if (failoverInFlight || engineFallbackRequested) return
+        val channel = PhonePlayerBridge.channel ?: return
+        channel.invokeMethod("tryOtherPlayer", mapOf(
+            "sessionId" to sessionId, "index" to currentIndex, "url" to currentUrl,
+            "positionMs" to (player?.currentPosition ?: 0L), "manual" to true,
+        ), object : io.flutter.plugin.common.MethodChannel.Result {
+            override fun success(result: Any?) {
+                if (result == true) { engineFallbackRequested = true; finish() }
+            }
+            override fun error(code: String, message: String?, details: Any?) {}
+            override fun notImplemented() {}
+        })
     }
 
     private fun showInfo() {
@@ -2234,6 +2642,38 @@ class PhonePlayerActivity : Activity() {
                 setColor(0xCC0B0B0FL.toInt())
             }
 
+        val pullColors = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf()),
+            intArrayOf(
+                intent.getIntExtra(PhonePlayerIntent.EXTRA_ACCENT, getColor(R.color.phone_player_accent)),
+                android.graphics.Color.WHITE,
+            ),
+        )
+        rotationPullArrow = TextView(this).apply {
+            setTextColor(pullColors)
+            textSize = 16f
+        }
+        rotationPullProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progressTintList = pullColors
+            progressBackgroundTintList = ColorStateList.valueOf(0x40FFFFFF)
+        }
+        rotationPullHint = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            background = pill()
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            visibility = View.GONE
+            addView(rotationPullArrow)
+            addView(rotationPullProgress, LinearLayout.LayoutParams(dp(48), dp(3)).apply {
+                marginStart = dp(6)
+            })
+        }
+        root.addView(rotationPullHint, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+        ).apply { topMargin = dp(16) })
+
         hudPill =
             LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -2298,6 +2738,33 @@ class PhonePlayerActivity : Activity() {
             ).apply { topMargin = (72 * density).toInt() },
         )
 
+        holdSpeedBadge = TextView(this).apply {
+            text = "2×"
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 13.5f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", 0)
+            gravity = Gravity.CENTER_VERTICAL
+            background = pill().apply {
+                cornerRadius = dp(13).toFloat()
+                setColor(0x80000000.toInt())
+            }
+            setPaddingRelative(dp(10), dp(6), dp(12), dp(6))
+            val icon = getDrawable(R.drawable.ic_seek_forward)?.apply {
+                setBounds(0, 0, dp(18), dp(18))
+            }
+            setCompoundDrawablesRelative(icon, null, null, null)
+            compoundDrawablePadding = dp(5)
+            visibility = View.GONE
+        }
+        root.addView(
+            holdSpeedBadge,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+            ).apply { topMargin = dp(12) },
+        )
+
         fun seekLabel(): TextView =
             TextView(this).apply {
                 setTextColor(0xFFFFFFFFL.toInt())
@@ -2333,12 +2800,60 @@ class PhonePlayerActivity : Activity() {
         ev: MotionEvent,
         taps: android.view.GestureDetector,
     ) {
-        when (ev.actionMasked) {
+        val action = ev.actionMasked
+        val holding = speedBeforeHold != null
+        when (action) {
+            MotionEvent.ACTION_DOWN -> {
+                singleFingerRotation = true
+                downX = ev.x
+                downY = ev.y
+                rotationDownX = ev.rawX
+                rotationDownY = ev.rawY
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                singleFingerRotation = false
+                restoreSpeedAfterHold()
+                resetRotationPull()
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                restoreSpeedAfterHold()
+                resetRotationPull()
+            }
+            MotionEvent.ACTION_UP -> restoreSpeedAfterHold()
+        }
+        val rotationY = ev.rawY - rotationDownY
+        val rotationX = kotlin.math.abs(ev.rawX - rotationDownX)
+        if (isPortraitCard() || (holding && action != MotionEvent.ACTION_POINTER_DOWN)) {
+            taps.onTouchEvent(ev)
+            val up = -rotationY
+            val pullingUp = singleFingerRotation && !holding && up > rotationX
+            if (action == MotionEvent.ACTION_MOVE && !holding) {
+                if (pullingUp && up >= dp(12)) updateRotationPull(v, rotationY)
+                else resetRotationPull()
+            }
+            if (action == MotionEvent.ACTION_UP && !holding) {
+                val commit = pullingUp && up >= dp(ROTATION_PULL_DISTANCE_DP)
+                resetRotationPull(animate = !commit)
+                if (commit) {
+                    toggleRotation()
+                } else {
+                    v.performClick()
+                }
+            }
+            return
+        }
+        // Let the detector see the move or second finger that claims the gesture,
+        // so it cancels the pending long press before swipe or pinch takes over.
+        if (action == MotionEvent.ACTION_CANCEL ||
+            (!pinchActive && gestureMode == 0 &&
+                (pinchEndAt == 0L || android.os.SystemClock.uptimeMillis() - pinchEndAt > 300L))
+        ) {
+            taps.onTouchEvent(ev)
+        }
+        when (action) {
             MotionEvent.ACTION_DOWN -> {
                 pointers.clear()
                 pointers[ev.getPointerId(0)] = ev.x to ev.y
-                downX = ev.x
-                downY = ev.y
                 gestureMode = 0
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -2358,13 +2873,25 @@ class PhonePlayerActivity : Activity() {
                     val dy = ev.y - downY
                     val slop = 24f * resources.displayMetrics.density
                     if (kotlin.math.max(kotlin.math.abs(dx), kotlin.math.abs(dy)) > slop) {
-                        gestureMode = if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) 1 else 2
-                        if (gestureMode == 1) startHSeek() else startVSlide(ev.x)
+                        gestureMode = when {
+                            kotlin.math.abs(dx) > kotlin.math.abs(dy) -> 1
+                            singleFingerRotation &&
+                                resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE &&
+                                downX >= v.width / 3f && downX <= v.width * 2 / 3f -> 3
+                            else -> 2
+                        }
+                        if (gestureMode == 1) startHSeek()
+                        if (gestureMode == 2) startVSlide(ev.x)
                     }
                 } else if (gestureMode == 1) {
                     updateHSeek(ev.x)
                 } else if (gestureMode == 2) {
                     updateVSlide(ev.y)
+                }
+                if (gestureMode == 3 && singleFingerRotation && rotationY > rotationX) {
+                    updateRotationPull(v, rotationY)
+                } else if (gestureMode == 3) {
+                    resetRotationPull()
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
@@ -2382,19 +2909,57 @@ class PhonePlayerActivity : Activity() {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (gestureMode == 1 && ev.actionMasked == MotionEvent.ACTION_UP) commitHSeek()
                 if (gestureMode == 2) endVSlide()
+                val returnToPortrait = gestureMode == 3 && singleFingerRotation &&
+                    action == MotionEvent.ACTION_UP && rotationY >= dp(ROTATION_PULL_DISTANCE_DP) &&
+                    rotationY > rotationX
+                if (gestureMode == 3 && action == MotionEvent.ACTION_UP) {
+                    resetRotationPull(animate = !returnToPortrait)
+                }
                 if (pinchActive) endPinch()
                 pointers.clear()
                 gestureMode = 0
                 // Only a real release is a "click"; firing on every ACTION_MOVE
                 // spams TalkBack with a click event per drag sample.
-                if (ev.actionMasked == MotionEvent.ACTION_UP) v.performClick()
+                if (returnToPortrait) showWatchPage()
+                else if (action == MotionEvent.ACTION_UP) v.performClick()
             }
         }
-        if (!pinchActive && gestureMode == 0 &&
-            android.os.SystemClock.uptimeMillis() - pinchEndAt > 300L
-        ) {
-            taps.onTouchEvent(ev)
+    }
+
+    private fun rotationMotionEnabled() = Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+        android.animation.ValueAnimator.areAnimatorsEnabled()
+
+    private fun updateRotationPull(video: View, distance: Float) {
+        val progress = (kotlin.math.abs(distance) * 100 / dp(ROTATION_PULL_DISTANCE_DP)).toInt().coerceAtMost(100)
+        video.animate().cancel()
+        if (rotationMotionEnabled()) {
+            video.translationY = (distance * .5f).coerceIn(-dp(36).toFloat(), dp(36).toFloat())
         }
+        rotationPullArrow.text = if (distance < 0) "↑" else "↓"
+        rotationPullArrow.isSelected = progress == 100
+        rotationPullProgress.isSelected = progress == 100
+        rotationPullProgress.progress = progress
+        rotationPullHint.visibility = View.VISIBLE
+    }
+
+    private fun resetRotationPull(animate: Boolean = true) {
+        if (!::rotationPullHint.isInitialized) return
+        val video = findViewById<View>(R.id.player_root)
+        if (animate && rotationPullHint.visibility != View.VISIBLE) return
+        rotationPullHint.visibility = View.GONE
+        video.animate().cancel()
+        if (animate && rotationMotionEnabled() && video.translationY != 0f) {
+            video.animate().translationY(0f).setDuration(160).start()
+        } else {
+            video.translationY = 0f
+        }
+    }
+
+    private fun restoreSpeedAfterHold() {
+        val previous = speedBeforeHold ?: return
+        speedBeforeHold = null
+        player?.playbackParameters = previous
+        holdSpeedBadge.visibility = View.GONE
     }
 
     /** Accumulating double-tap label, Dantotsu-style: "-20s", "+30s". */
@@ -2628,18 +3193,110 @@ class PhonePlayerActivity : Activity() {
             .start()
     }
 
+    private fun updateSegmentFill() {
+        segmentFill.clipBounds = android.graphics.Rect(
+            0, 0, (segmentFill.width * segmentProgress / 10_000), segmentFill.height,
+        )
+    }
+
+    private fun segmentControlsVisible() = controls.visibility == View.VISIBLE && !controlsHiding
+
+    private fun updateSegmentButton(segment: SkipSegment?) {
+        if (activeSegment != segment) {
+            activeSegment = segment
+            segmentTimer.cancel()
+            segmentProgress = 0
+            updateSegmentFill()
+            if (segment != null) {
+                segmentLabel.setText(segment.label)
+                segmentFill.setText(segment.label)
+                segmentButton.contentDescription = getString(segment.label)
+            }
+        }
+        if (segment == null) {
+            segmentButton.visibility = View.GONE
+            return
+        }
+
+        val controlsVisible = segmentControlsVisible()
+        if (segmentProgress < 10_000) {
+            if (segmentTimer.isPaused) segmentTimer.resume()
+            else if (!segmentTimer.isStarted) segmentTimer.start()
+        }
+        segmentButton.visibility = if (controlsVisible || segmentProgress < 10_000) {
+            View.VISIBLE
+        } else View.GONE
+
+        val params = segmentButton.layoutParams as FrameLayout.LayoutParams
+        val bottom = dp(if (isPortraitCard()) 52 else if (controlsVisible) 120 else 28)
+        if (params.bottomMargin != bottom) {
+            params.bottomMargin = bottom
+            segmentButton.layoutParams = params
+        }
+    }
+
+    private fun syncSkipSegments(p: ExoPlayer, position: Long, duration: Long) {
+        if (!playbackStarted || switching || p.playbackState != Player.STATE_READY ||
+            loadedEpisodeIndex != currentIndex || loadingOverlay.visibility == View.VISIBLE
+        ) {
+            updateSegmentButton(null)
+            return
+        }
+        if (!skipsRequested) {
+            skipsRequested = true
+            val sourceFactory = currentSourceFactory
+            val index = currentIndex
+            val generation = mediaGeneration
+            PhonePlayerBridge.channel?.invokeMethod(
+                "skipsFor",
+                mapOf("sessionId" to sessionId, "index" to index, "durationMs" to duration),
+                object : io.flutter.plugin.common.MethodChannel.Result {
+                    override fun success(result: Any?) {
+                        if (!uiAlive() || player !== p || currentSourceFactory !== sourceFactory ||
+                            index != currentIndex || generation != mediaGeneration) return
+                        val response = result as? Map<*, *> ?: return
+                        showSegmentButton = response["manual"] == true
+                        skipSegments = (response["segments"] as? List<*>).orEmpty().mapNotNull {
+                            val row = it as? Map<*, *> ?: return@mapNotNull null
+                            val start = (row["start"] as? Number)?.toLong() ?: return@mapNotNull null
+                            val end = (row["end"] as? Number)?.toLong() ?: return@mapNotNull null
+                            if (start < 0 || end <= start || end > duration) return@mapNotNull null
+                            val label = when (row["type"]) {
+                                "recap" -> R.string.phone_player_skip_recap
+                                "ed", "mixed-ed" -> R.string.phone_player_skip_ending
+                                else -> R.string.phone_player_skip_opening
+                            }
+                            SkipSegment(start, end, label, row["auto"] == true)
+                        }
+                    }
+                    override fun error(code: String, message: String?, details: Any?) {}
+                    override fun notImplemented() {}
+                },
+            )
+        }
+        val auto = if (p.isPlaying && !scrubbing) skipSegments.firstOrNull {
+            it.auto && it.start !in autoSkipped && position >= it.start && position < it.end - 1_000
+        } else null
+        if (auto != null) {
+            autoSkipped.add(auto.start)
+            p.seekTo(auto.end)
+            updateSegmentButton(null)
+            return
+        }
+        updateSegmentButton(if (showSegmentButton && !controlsLocked && !isInPictureInPictureMode && !scrubbing) {
+            skipSegments.firstOrNull { position >= it.start && position < it.end }
+        } else null)
+    }
+
     private fun syncProgress() {
         val p = player ?: return
         val d = p.duration
         if (d > 0) {
             val pos = p.currentPosition
+            syncSkipSegments(p, pos, d)
             if (!scrubbing) {
-                val progress = (pos * 1000 / d).toInt().coerceIn(0, 1000)
-                if (android.os.Build.VERSION.SDK_INT >= 24) {
-                    seek.setProgress(progress, true)
-                } else {
-                    seek.progress = progress
-                }
+                // Keep the drawable at the current position when rotation replaces the track.
+                seek.progress = (pos * 1000 / d).toInt().coerceIn(0, 1000)
                 timeText.text = if (isPortraitCard()) fmt(pos).padStart(5, '0') + " / " + fmt(d).padStart(5, '0') else fmt(pos) + " / " + fmt(d)
                 seek.contentDescription = getString(R.string.phone_player_desc_seek) + ", " + fmt(pos) + " of " + fmt(d)
             }
@@ -2815,12 +3472,17 @@ class PhonePlayerActivity : Activity() {
     // A phone gets interrupted by calls and notifications; the TV player never
     // had to handle this. Pause on the way out and leave resuming to the user.
     override fun onPause() {
+        resetRotationPull(animate = false)
+        if (subtitleStyleDialog?.isShowing == true) PhonePlayerBridge.setSubtitleOverlayResumed(false)
+        restoreSpeedAfterHold()
         orientationObserver?.disable()
         super.onPause()
         sendProgress()
-        player?.pause()
+        // PiP is still "paused" as an Activity but must keep playing.
+        if (!isInPictureInPictureMode) player?.pause()
         updateKeepScreenOn()
         handler.removeCallbacks(ticker)
+        if (segmentTimer.isRunning) segmentTimer.pause()
     }
 
     // The ticker is stopped in onPause so it doesn't keep polling a paused
@@ -2828,17 +3490,56 @@ class PhonePlayerActivity : Activity() {
     // here rather than in onCreate.
     override fun onResume() {
         super.onResume()
+        if (subtitleStyleDialog?.isShowing == true) PhonePlayerBridge.setSubtitleOverlayResumed(true)
         orientationObserver?.enable()
         updateKeepScreenOn()
         handler.post(ticker)
     }
 
+    // Android 8.0–11 have no auto-enter API, so arm PiP on Home; 12+ uses
+    // setAutoEnterEnabled and would double-trigger.
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (autoPipEnabled &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
+            playbackStarted &&
+            !isInPictureInPictureMode
+        ) {
+            pip.enter(null)
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            pip.applyParams()
+            // Only the system window chrome should be visible in PiP.
+            updateSegmentButton(null)
+            controls.visibility = View.GONE
+        } else {
+            bumpControls()
+        }
+    }
+
     override fun onDestroy() {
+        if (::seekPreview.isInitialized) seekPreview.close()
+        segmentTimer.cancel()
+        episodePanel?.setOnDismissListener(null)
+        episodePanel?.dismiss()
+        episodePanel = null
+        subtitleStyleDialog?.dismiss()
+        subtitleStyleDialog = null
+        pip.unregister()
         watchDownloadSheet?.dismiss()
         watchDownloadSheet = null
         orientationObserver?.disable()
         orientationObserver = null
         watchPanel?.close()
+        stopAmbient()
         PhonePlayerBridge.clearWatchData(sessionId)
         val finalPosition = player?.currentPosition ?: 0L
         val finalDuration = (player?.duration ?: 0L).coerceAtLeast(0L)
@@ -2880,6 +3581,11 @@ class PhonePlayerActivity : Activity() {
 
     private fun goImmersive() {
         val portraitPage = isPortraitCard()
+        // The activity theme is Theme.Black.NoTitleBar.Fullscreen, which
+        // never draws system bar backgrounds — statusBarColor below is a
+        // no-op without this, so the bar stayed opaque black regardless of
+        // what we set it to.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         // The activity theme also hides the status bar through a window flag.
         if (portraitPage) {
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
@@ -2888,13 +3594,24 @@ class PhonePlayerActivity : Activity() {
         }
         @Suppress("DEPRECATION")
         window.statusBarColor = android.graphics.Color.TRANSPARENT
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // A contrast scrim would paint a flat band over the glow in
+            // exactly the place mpv shows it through.
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
         val root = findViewById<View>(R.id.watch_root)
         val statusBarId = resources.getIdentifier("status_bar_height", "dimen", "android")
         val topInset = if (portraitPage && statusBarId > 0) resources.getDimensionPixelSize(statusBarId) else 0
         root?.setPadding(root.paddingLeft, topInset, root.paddingRight, root.paddingBottom)
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = if (portraitPage) {
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            // LIGHT_STATUS_BAR/LIGHT_NAVIGATION_BAR deliberately absent:
+            // white icons read over the ambient wash, like mpv.
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
         } else (
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 or View.SYSTEM_UI_FLAG_FULLSCREEN

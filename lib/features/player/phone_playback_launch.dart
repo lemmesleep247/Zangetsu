@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'playback_loading_title.dart' show playbackArtworkHeaders;
+
 import '../../core/di/injector.dart';
 import '../../core/stremio/stremio_manager.dart';
 import '../../core/stremio/stremio_ref.dart';
@@ -23,6 +25,9 @@ import '../../core/playback/playback_prefs.dart';
 import '../../core/playback/title_prefs.dart';
 import '../../core/playback/resume_store.dart';
 import '../../core/playback/source_selection.dart';
+import '../../core/playback/skip_service.dart';
+import '../../core/playback/subtitle_download_service.dart';
+import '../../core/playback/subtitle_language.dart';
 import '../../core/playback/subtitle_encode_skew.dart';
 import '../../core/playback/subtitle_font_stage.dart';
 import '../../core/playback/tv_track_helpers.dart';
@@ -30,9 +35,11 @@ import '../../core/playback/watch_history.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/tracker/tracker_hub.dart';
 import '../../core/tracker/simkl_playback_session.dart';
+import '../../core/ui/global_messenger.dart';
 import 'subtitle_font_service.dart';
 import 'player_controls_config.dart';
 import 'player_engine_fallback.dart';
+import 'player_screen.dart' show openSubtitleStyleSheet;
 import 'subtitle_style.dart';
 import 'watch_page_info.dart';
 import '../detail/cubit/detail_cubit.dart' show seasonOf;
@@ -166,6 +173,46 @@ Map<String, dynamic> _phoneSubtitlePayload(VideoSource source) {
   };
 }
 
+/// Auto-downloaded subtitle for a native-player source that carries none.
+///
+/// Mirrors the built-in player's keyless fallback and the TV player's
+/// download-and-attach: the same [SubtitleDownloadService], remote-URL
+/// handoff, no temp files. [fetch] is the service call pre-bound by the
+/// caller so tests can substitute canned results.
+Future<Subtitle?> autoDownloadedPhoneSubtitle({
+  required List<Subtitle> existing,
+  required bool autoDownload,
+  required bool hasIdentifiers,
+  required String iso2,
+  String? label,
+  required Future<List<({String lang, String url})>> Function() fetch,
+}) async {
+  if (existing.isNotEmpty || !autoDownload || !hasIdentifiers) return null;
+  late final List<({String lang, String url})> found;
+  try {
+    found = await fetch();
+  } catch (_) {
+    return null;
+  }
+  if (found.isEmpty) return null;
+  final url = found.first.url.trim();
+  if (url.isEmpty) return null;
+  final lang = found.first.lang.trim();
+  final u = url.toLowerCase();
+  final format = u.contains('.vtt')
+      ? 'vtt'
+      : u.contains('.ass') || u.contains('.ssa')
+      ? 'ass'
+      : 'srt';
+  return Subtitle(
+    url: url,
+    lang: lang.isNotEmpty ? lang : iso2,
+    label: label ?? (lang.isNotEmpty ? lang : iso2),
+    format: format,
+    isDefault: true,
+  );
+}
+
 Map<String, dynamic> phoneSourceMap(VideoSource source, int index) {
   return <String, dynamic>{
     'label': phoneMirrorLabel(source, index),
@@ -198,7 +245,9 @@ Map<String, dynamic> phonePlayerArgs({
   int nativeCacheMb = 128,
   bool diskCacheEnabled = false,
   int diskCacheGb = 2,
+  bool autoPip = false,
   required double defaultSpeed,
+  bool holdSpeed = true,
   required Map<String, dynamic> bufferParams,
   required double subtitleScale,
   required int subtitleFgColor,
@@ -206,6 +255,7 @@ Map<String, dynamic> phonePlayerArgs({
   required int subtitleEdgeType,
   required int subtitleEdgeColor,
   required String subtitlePreference,
+  int subtitlePosition = 95,
   required bool autoResume,
   required bool keepScreenOn,
   required bool autoplayNext,
@@ -213,12 +263,16 @@ Map<String, dynamic> phonePlayerArgs({
   bool isMovie = false,
   bool stremioSubtitles = false,
   bool autoPlayerFallback = false,
+  bool ambientPlayer = true,
   bool megaSkip = true,
   int megaSkipSeconds = 85,
   String? subtitleFontPath,
   String? cover,
   Map<String, String>? coverHeaders,
+  String? loadingArtwork,
+  String? loadingLogo,
   String playerOrientation = 'landscape',
+  bool portraitVideoEdgeToEdge = false,
   Map<String, List<String>>? controlLayout,
   Map<String, dynamic>? watchData,
   String? showDescription,
@@ -230,6 +284,7 @@ Map<String, dynamic> phonePlayerArgs({
   return <String, dynamic>{
     if (stremioSubtitles) 'stremioSubtitles': true,
     if (autoPlayerFallback) 'autoPlayerFallback': true,
+    'ambientPlayer': ambientPlayer,
     // No url: the Activity opens on its loading screen and asks Dart for the
     // episode over the channel, so the user never waits on a blank route.
     if (source != null) ...{
@@ -253,9 +308,11 @@ Map<String, dynamic> phonePlayerArgs({
     'diskCacheEnabled': diskCacheEnabled,
     'diskCacheGb': diskCacheGb.clamp(1, 20),
     'defaultSpeed': defaultSpeed,
+    'holdSpeed': holdSpeed,
     ...bufferParams,
     'autoResume': autoResume,
     'keepScreenOn': keepScreenOn,
+    'autoPip': autoPip,
     'autoplayNext': autoplayNext,
     'seekSeconds': seekSeconds,
     'megaSkip': megaSkip,
@@ -269,10 +326,19 @@ Map<String, dynamic> phonePlayerArgs({
     'subtitleEdgeType': subtitleEdgeType,
     'subtitleEdgeColor': subtitleEdgeColor,
     'subtitlePreference': subtitlePreference,
+    'subtitlePosition': subtitlePosition.clamp(0, 100),
     'subtitleFontPath': ?subtitleFontPath,
     'cover': ?cover,
+    'loadingArtwork': ?loadingArtwork,
+    'loadingArtworkHeaders': ?playbackArtworkHeaders(
+      loadingArtwork,
+      cover,
+      coverHeaders,
+    ),
+    'loadingLogo': ?loadingLogo,
     'coverHeaders': coverHeaders ?? const <String, String>{},
     'playerOrientation': playerOrientation,
+    'portraitVideoEdgeToEdge': portraitVideoEdgeToEdge,
     'controlLayout': ?controlLayout,
     'watchData': ?watchData,
     'showDescription': ?showDescription,
@@ -361,6 +427,8 @@ Future<bool> launchPhonePlayback({
   String? showTitle,
   String? cover,
   Map<String, String>? coverHeaders,
+  String? loadingArtwork,
+  String? loadingLogo,
   String category = 'sub',
   List<String> availableCategories = const [],
   String? showDescription,
@@ -391,6 +459,8 @@ Future<bool> launchPhonePlayback({
     showTitle: showTitle,
     cover: cover,
     coverHeaders: coverHeaders,
+    loadingArtwork: loadingArtwork,
+    loadingLogo: loadingLogo,
     category: category,
     availableCategories: availableCategories,
     showDescription: showDescription,
@@ -466,6 +536,7 @@ class PhoneNativePlayer {
   static PhonePlaybackFailure? _pendingEngineFailure;
   static bool _forceInitialResume = false;
   static final _engineSources = <int, List<VideoSource>>{};
+  static (int, int, String, Episode)? _mirrorPollScope;
 
   static List<VideoSource> _rememberEngineSources(
     int index,
@@ -473,19 +544,34 @@ class PhoneNativePlayer {
     required int session,
     required String category,
   }) {
-    if (_engineFallback == null ||
-        session != _sessionId ||
+    if (session != _sessionId ||
         category != _category ||
         _closed?.isCompleted != false) {
       return sources;
     }
     _engineSources[index] = sources;
+    return _blockedFiltered(index, sources);
+  }
+
+  static List<VideoSource> _blockedFiltered(
+    int index,
+    List<VideoSource> sources,
+  ) {
     final blocked = sl<PlaybackPrefs>().autoPlayerFallback
-        ? _engineFallback!.blockedUrls(_episodes[index].url, _category)
-        : <String>{};
+        ? _engineFallback?.blockedUrls(_episodes[index].url, _category) ??
+              const <String>{}
+        : const <String>{};
     return blocked.isEmpty
         ? sources
         : sources.where((source) => !blocked.contains(source.url)).toList();
+  }
+
+  /// What's already resolved for [index], if the episode's own open/switch
+  /// already fetched it — null only before anything has resolved at all.
+  static List<VideoSource>? _cachedSourcesFor(int index) {
+    final raw = _engineSources[index];
+    if (raw == null || raw.isEmpty) return null;
+    return raw;
   }
 
   /// Returns false when the Activity cannot be started; stream errors are
@@ -506,6 +592,8 @@ class PhoneNativePlayer {
     String? showTitle,
     String? cover,
     Map<String, String>? coverHeaders,
+    String? loadingArtwork,
+    String? loadingLogo,
     String category = 'sub',
     List<String> availableCategories = const [],
     String? showDescription,
@@ -527,6 +615,7 @@ class PhoneNativePlayer {
     _forceInitialResume = forceInitialResume;
     _pendingEngineFailure = null;
     _engineSources.clear();
+    _mirrorPollScope = null;
     _resolve = resolveSources;
     _pollSources = pollSources;
     _peek = peek;
@@ -582,6 +671,7 @@ class PhoneNativePlayer {
           engineFallback != null &&
           onEngineFallback != null &&
           prefs.autoPlayerFallback,
+      ambientPlayer: prefs.ambientPlayer,
       startIndex: startIndex,
       accentColor: AppColors.accent.toARGB32(),
       softwareDecoding: prefs.videoDecoder == 'sw',
@@ -590,7 +680,9 @@ class PhoneNativePlayer {
       nativeCacheMb: prefs.phoneNativeCacheMb,
       diskCacheEnabled: prefs.phoneDiskCacheEnabled,
       diskCacheGb: prefs.phoneDiskCacheGb,
+      autoPip: prefs.autoPip,
       defaultSpeed: prefs.defaultSpeed,
+      holdSpeed: prefs.holdSpeed,
       bufferParams: prefs.exoBufferParams,
       subtitleScale: prefs.subtitleScale,
       subtitleFgColor: parseSubtitleHex(
@@ -606,6 +698,7 @@ class PhoneNativePlayer {
         prefs.subtitleOutlineColorHex,
       ).toARGB32(),
       subtitlePreference: _resolvedSubtitlePreference(),
+      subtitlePosition: prefs.subtitlePosition,
       autoResume: prefs.autoResume,
       keepScreenOn: prefs.keepScreenOn,
       autoplayNext: prefs.autoplayNext,
@@ -615,7 +708,14 @@ class PhoneNativePlayer {
       subtitleFontPath: subFontPath,
       cover: _cover,
       coverHeaders: _coverHeaders,
+      loadingArtwork: [
+        ep.thumbnail,
+        loadingArtwork,
+        cover,
+      ].whereType<String>().where((url) => url.trim().isNotEmpty).firstOrNull,
+      loadingLogo: loadingLogo,
       playerOrientation: prefs.playerOrientation,
+      portraitVideoEdgeToEdge: prefs.portraitVideoEdgeToEdge,
       controlLayout: {
         'top': prefs.playerBarTop ?? PlayerControlsConfig.defaultTop,
         'left': prefs.playerBarLeft ?? PlayerControlsConfig.defaultLeft,
@@ -640,6 +740,9 @@ class PhoneNativePlayer {
             !ep.url.startsWith('file:') &&
             !ep.url.startsWith('content:'),
         'surface': AppColors.surface2.toARGB32(),
+        'episodeSurface': AppColors.surface.toARGB32(),
+        'episodeDialogSurface': AppColors.bg.toARGB32(),
+        'episodeForeground': AppColors.textPrimary.toARGB32(),
         'downloadSurface': AppColors.surface.toARGB32(),
         'secondary': AppColors.textSecondary.toARGB32(),
       },
@@ -689,6 +792,66 @@ class PhoneNativePlayer {
   }
 
   static final _stremioSources = <int, List<VideoSource>>{};
+  static ModalRoute<dynamic>? _subtitleStyleRoute;
+  static bool _subtitleStyleOpen = false;
+
+  static Future<void> _showSubtitleStyle(int sessionId) async {
+    final navigator = rootNavigatorKey.currentState;
+    if (navigator == null || _subtitleStyleOpen) return;
+    _subtitleStyleOpen = true;
+    // Only the sheet and its scrim should paint over the native video.
+    final cover = PageRouteBuilder<void>(
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      pageBuilder: (_, _, _) => const SizedBox.expand(),
+    );
+    unawaited(navigator.push(cover));
+    String? stagedFont;
+    Future<String?>? fontPath;
+    var revision = 0;
+    try {
+      await openSubtitleStyleSheet(
+        navigator.context,
+        null,
+        () {},
+        onRoute: (route) => _subtitleStyleRoute = route,
+        onStyleChanged: () async {
+          final current = ++revision;
+          final prefs = sl<PlaybackPrefs>();
+          final family = prefs.subtitleFont;
+          if (family != stagedFont) {
+            stagedFont = family;
+            fontPath = _stageSubtitleFont(family);
+          }
+          final path = await fontPath;
+          if (current != revision || sessionId != _sessionId) return;
+          await _ch.invokeMethod('updateSubtitleStyle', {
+            'sessionId': sessionId,
+            'scale': prefs.subtitleScale,
+            'position': prefs.subtitlePosition,
+            'foreground': parseSubtitleHex(
+              prefs.subtitleColorHex,
+              opacity: prefs.subtitleTextOpacity,
+            ).toARGB32(),
+            'background': parseSubtitleHex(
+              '#000000',
+              opacity: prefs.subtitleBgOpacity,
+            ).toARGB32(),
+            'edgeType': tvEdgeTypeFromOutlinePref(prefs.subtitleOutlineType),
+            'edgeColor': parseSubtitleHex(
+              prefs.subtitleOutlineColorHex,
+            ).toARGB32(),
+            'fontPath': path,
+          });
+        },
+      );
+      await _subtitleStyleRoute?.completed;
+    } finally {
+      _subtitleStyleRoute = null;
+      _subtitleStyleOpen = false;
+      if (navigator.mounted && cover.isActive) navigator.removeRoute(cover);
+    }
+  }
 
   static Future<dynamic> _onNativeCall(MethodCall call) async {
     switch (call.method) {
@@ -737,6 +900,20 @@ class PhoneNativePlayer {
         );
         if (session != _sessionId || _closed?.isCompleted != false) return null;
         return _phoneSubtitlePayload(enriched);
+      case 'openSubtitleStyle':
+        final args = _callArgs(call);
+        if (_closed?.isCompleted != false || args?['sessionId'] != _sessionId) {
+          return null;
+        }
+        await _showSubtitleStyle(_sessionId);
+        return null;
+      case 'closeSubtitleStyle':
+        final route = _subtitleStyleRoute;
+        if (_callArgs(call)?['sessionId'] == _sessionId &&
+            route?.isActive == true) {
+          route?.navigator?.removeRoute(route);
+        }
+        return null;
       case 'rememberSubtitle':
         final args = _callArgs(call);
         if (_closed?.isCompleted != false ||
@@ -756,13 +933,86 @@ class PhoneNativePlayer {
         }
         await sl<TitlePrefsStore>().setSubtitleChoice(_sourceId, show, choice);
         return null;
+      case 'skipsFor':
+        final args = _callArgs(call);
+        final index = (args?['index'] as num?)?.toInt() ?? -1;
+        final durationMs = (args?['durationMs'] as num?)?.toInt() ?? 0;
+        if (_closed?.isCompleted != false ||
+            args?['sessionId'] != _sessionId ||
+            index < 0 ||
+            index >= _episodes.length ||
+            durationMs <= 0) {
+          return null;
+        }
+        final prefs = sl<PlaybackPrefs>();
+        if (!prefs.skipIntro &&
+            !prefs.autoSkipOp &&
+            !prefs.autoSkipRecap &&
+            !prefs.autoSkipEd) {
+          return null;
+        }
+        final ep = _episodes[index];
+        final duration = Duration(milliseconds: durationMs);
+        final service = sl<SkipService>();
+        final useIntroDb =
+            _scrobbleTitle == null &&
+            _malId == null &&
+            (_imdbId != null || _tmdbId != null);
+        final List<SkipInterval> skips;
+        if (useIntroDb) {
+          skips = await service.introDbTimes(
+            imdbId: _imdbId,
+            tmdbId: _tmdbId,
+            isTv: !_isMovie,
+            season: ep.season,
+            episode: ep.number,
+            duration: duration,
+          );
+        } else {
+          if (_scrobbleTitle == null && _malId == null) return null;
+          final title = _scrobbleTitle ?? _showTitle;
+          final number = ep.number?.toInt();
+          if (title.isEmpty || number == null) return null;
+          skips = await service.skipTimes(
+            title: title,
+            episode: number,
+            duration: duration,
+          );
+        }
+        return {
+          'manual': prefs.skipIntro,
+          'segments': [
+            for (final skip in skips)
+              {
+                'start': skip.start.inMilliseconds,
+                'end': skip.end.inMilliseconds,
+                'type': skip.type,
+                'auto': isRecapSkip(skip.type)
+                    ? prefs.autoSkipRecap
+                    : isEndingSkip(skip.type)
+                    ? prefs.autoSkipEd
+                    : prefs.autoSkipOp,
+              },
+          ],
+        };
       case 'resolveEpisode':
         final rArgs = _callArgs(call);
         final index = (rArgs?['index'] as num?)?.toInt() ?? -1;
         if (index < 0 || index >= _episodes.length) return null;
         return _resolveEpisode(index);
       case 'playbackStarted':
-        final index = (_callArgs(call)?['index'] as num?)?.toInt() ?? -1;
+        final args = _callArgs(call);
+        final index = (args?['index'] as num?)?.toInt() ?? -1;
+        if (args?['sessionId'] == _sessionId &&
+            _closed?.isCompleted == false &&
+            index >= 0 &&
+            index < _episodes.length) {
+          final scope = (_sessionId, index, _category, _episodes[index]);
+          if (_pollSources != null && scope != _mirrorPollScope) {
+            _mirrorPollScope = scope;
+            unawaited(_pollLateMirrors(scope));
+          }
+        }
         if (!phoneShouldScrobbleOnFirstFrame(
           playerOpen: _closed?.isCompleted == false,
           alreadyScrobbled: _scrobbled,
@@ -1028,8 +1278,7 @@ class PhoneNativePlayer {
         );
         if (index == null ||
             _onEngineFallback == null ||
-            _engineFallback == null ||
-            !sl<PlaybackPrefs>().autoPlayerFallback) {
+            _engineFallback == null) {
           return false;
         }
         final url = args?['url'];
@@ -1041,7 +1290,20 @@ class PhoneNativePlayer {
             break;
           }
         }
-        if (source == null ||
+        if (source == null) return false;
+        // A torrent can never play natively — yield to mpv even when the
+        // auto-switch toggle is off. Anything else needs the toggle, unless
+        // the user tapped Switch Player themselves.
+        final manual = args?['manual'] == true;
+        if (!manual &&
+            !isNativeBlockedTorrent(source) &&
+            !sl<PlaybackPrefs>().autoPlayerFallback) {
+          return false;
+        }
+        // A manual switch isn't a failure — recording it in the shared
+        // fallback tracker would make the SECOND manual switch for the same
+        // episode permanently a no-op (next() is one-shot per engine/source).
+        if (!manual &&
             _engineFallback!.next(
                   enabled: true,
                   failedEngine: PlaybackEngine.nativePlayer,
@@ -1065,21 +1327,70 @@ class PhoneNativePlayer {
         final args = _callArgs(call);
         final index = (args?['index'] as num?)?.toInt() ?? -1;
         if (index < 0 || index >= _episodes.length) return const <Map>[];
-        final session = _sessionId;
-        final requestCategory = _category;
-        final sources = await _resolveSources(
-          _episodes[index],
-          preferPolled: true,
-        );
-        final prepared = _rememberEngineSources(
-          index,
-          await _prepareSources(sources),
-          session: session,
-          category: requestCategory,
-        );
-        if (session != _sessionId || _closed?.isCompleted != false) {
+        final refresh = args?['refresh'] == true;
+        final requestedSession = args?['sessionId'];
+        if ((refresh || requestedSession != null) &&
+            requestedSession != _sessionId) {
           return const <Map>[];
         }
+        final session = _sessionId;
+        final requestCategory = _category;
+        final ep = _episodes[index];
+        final cached = _cachedSourcesFor(index);
+        final existing = cached ?? const <VideoSource>[];
+        List<VideoSource> arrivals = const [];
+        if (refresh) {
+          try {
+            if (sl.isRegistered<CatalogueRepository>()) {
+              arrivals = await sl<CatalogueRepository>()
+                  .sources(
+                    tvEpisodeUrl(ep.url, requestCategory),
+                    sourceId: _sourceId,
+                    fast: false,
+                  )
+                  .timeout(const Duration(seconds: 15));
+            } else {
+              arrivals = await _resolveSources(
+                ep,
+              ).timeout(const Duration(seconds: 15));
+            }
+          } catch (_) {
+            return const <Map>[];
+          }
+        } else if (cached == null ||
+            (_sourceId == stremioSourceId &&
+                index == _startIndex &&
+                cached.length == 1 &&
+                cached.single.url == _seedSource?.url)) {
+          arrivals = await _resolveSources(ep, preferPolled: cached == null);
+        } else if (_pollSources case final poll?) {
+          // Read the running resolve's snapshot without queuing another scrape.
+          try {
+            arrivals = (await poll(
+              tvEpisodeUrl(ep.url, requestCategory),
+            ).timeout(const Duration(seconds: 2))).sources;
+          } catch (_) {
+            // Keep the mirrors already available.
+          }
+        }
+        if (session != _sessionId ||
+            requestCategory != _category ||
+            _closed?.isCompleted != false) {
+          return const <Map>[];
+        }
+        final seen = existing.map((source) => source.url).toSet();
+        final additions = await _prepareSources(
+          arrivals.where((source) => seen.add(source.url)).toList(),
+        );
+        if (session != _sessionId ||
+            requestCategory != _category ||
+            _closed?.isCompleted != false) {
+          return const <Map>[];
+        }
+        final prepared = _blockedFiltered(
+          index,
+          _appendMirrorSources(index, additions),
+        );
         if (_sourceId == stremioSourceId) _stremioSources[index] = prepared;
         return [
           for (var i = 0; i < prepared.length; i++)
@@ -1115,6 +1426,13 @@ class PhoneNativePlayer {
           final value = _callArgs(call)?['value'] as bool?;
           if (value == null) return null;
           await sl<PlaybackPrefs>().setAutoplayNext(value);
+          return null;
+        }
+      case 'setAmbientPlayer':
+        {
+          final value = _callArgs(call)?['value'] as bool?;
+          if (value == null) return null;
+          await sl<PlaybackPrefs>().setAmbientPlayer(value);
           return null;
         }
       case 'saveControlLayout':
@@ -1288,8 +1606,42 @@ class PhoneNativePlayer {
       return null;
     }
     if (_sourceId == stremioSourceId) _stremioSources[index] = prepared;
-    final src = seed == null ? _pickSource(prepared, ep) : prepared.first;
-    if (src == null) return null;
+    final src0 = seed == null ? _pickSource(prepared, ep) : prepared.first;
+    if (src0 == null) return null;
+    var src = src0;
+    // Keyless auto-download for subtitle-less sources: the native player has
+    // no fetch of its own, so mirror the built-in player's silent fallback
+    // here at resolve time (URL-handed, like the TV player — no temp files).
+    if (src.subtitles.isEmpty && sl<PlaybackPrefs>().autoDownloadSubtitles) {
+      final prefLang = languageByPref(
+        sl<PlaybackPrefs>().preferredSubtitleLanguage,
+      );
+      if (prefLang != null) {
+        final epNum = ep.number?.toInt();
+        final dl = await autoDownloadedPhoneSubtitle(
+          existing: src.subtitles,
+          autoDownload: true,
+          hasIdentifiers:
+              (_imdbId?.isNotEmpty ?? false) ||
+              _tmdbId != null ||
+              _showTitle.isNotEmpty,
+          iso2: prefLang.iso2,
+          label: prefLang.name,
+          fetch: () => SubtitleDownloadService().find(
+            imdbId: _imdbId,
+            tmdbId: _tmdbId,
+            isTv: _tmdbIsTv,
+            season: _tmdbIsTv ? 1 : null,
+            episode: _tmdbIsTv ? epNum : null,
+            title: _showTitle.isNotEmpty ? _showTitle : null,
+            iso2: prefLang.iso2,
+            iso1: prefLang.iso1,
+          ),
+        );
+        if (session != _sessionId || category != _category) return null;
+        if (dl != null) src = src.withSubtitles([dl]);
+      }
+    }
     final position = index == _startIndex && _forceInitialResume
         ? _resumeOverride
         : index == _startIndex
@@ -1362,6 +1714,68 @@ class PhoneNativePlayer {
   static int _indexOfSource(List<VideoSource> sources, VideoSource target) {
     final index = sources.indexWhere((source) => source.url == target.url);
     return index < 0 ? 0 : index;
+  }
+
+  static Future<void> _pollLateMirrors(
+    (int, int, String, Episode) scope,
+  ) async {
+    final (session, index, category, episode) = scope;
+    final poll = _pollSources;
+    if (poll == null) return;
+    final url = tvEpisodeUrl(episode.url, category);
+    bool current() =>
+        _mirrorPollScope == scope &&
+        _sessionId == session &&
+        _closed?.isCompleted == false &&
+        _category == category &&
+        index < _episodes.length &&
+        identical(_episodes[index], episode);
+    const delays = [
+      900,
+      1000,
+      2000,
+      3000,
+      5000,
+      8000,
+      10000,
+      10000,
+      10000,
+      10000,
+    ];
+    try {
+      for (final delay in delays) {
+        await Future<void>.delayed(Duration(milliseconds: delay));
+        if (!current()) return;
+        final snapshot = await poll(url);
+        if (!current()) return;
+        final seen = (_engineSources[index] ?? const <VideoSource>[])
+            .map((source) => source.url)
+            .toSet();
+        final extra = snapshot.sources
+            .where((source) => seen.add(source.url))
+            .toList();
+        if (extra.isNotEmpty) {
+          final additions = await _prepareSources(extra);
+          if (!current()) return;
+          _appendMirrorSources(index, additions);
+        }
+        if (snapshot.done) return;
+      }
+    } catch (_) {
+      // The first batch remains available if the background resolve fails.
+    }
+  }
+
+  static List<VideoSource> _appendMirrorSources(
+    int index,
+    List<VideoSource> additions,
+  ) {
+    final current = _engineSources[index] ?? const <VideoSource>[];
+    final seen = current.map((source) => source.url).toSet();
+    return _engineSources[index] = [
+      ...current,
+      ...additions.where((source) => seen.add(source.url)),
+    ];
   }
 
   static Future<List<VideoSource>> _resolveSources(

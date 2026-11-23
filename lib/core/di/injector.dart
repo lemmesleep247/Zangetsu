@@ -22,6 +22,7 @@ import '../cache/app_image_cache.dart';
 import '../platform/apple_tv.dart';
 import '../platform/app_paths.dart';
 import '../playback/category_store.dart';
+import '../playback/series_groups.dart';
 import '../playback/list_status_store.dart';
 import '../playback/my_list.dart';
 import '../playback/playback_prefs.dart';
@@ -390,6 +391,20 @@ Future<void> initDependencies({bool Function()? isOffline}) async {
       backendNamespace: backendNamespace,
     ),
   );
+  // Series groups: manual card-merge for My List. Its own box, beside the
+  // category store and for the same reason: a cloud pull clears the list
+  // box, and a series group must not go with it.
+  await SeriesGroupStore.init();
+  sl.registerSingleton<SeriesGroupStore>(
+    SeriesGroupStore(
+      remote: SeriesGroupRemote(
+        sl<SupabaseService>(),
+        vpsClient: vpsClient,
+        accessToken: cloudAccessToken,
+      ),
+      currentUserId: currentUserId,
+    ),
+  );
   await MyListStore.init();
   sl.registerSingleton<MyListStore>(
     MyListStore(
@@ -421,6 +436,24 @@ Future<void> initDependencies({bool Function()? isOffline}) async {
   sl.registerSingleton<TitlePrefsStore>(TitlePrefsStore());
   await HomeCache.init();
   await PlaybackPrefs.init();
+  // One-time: Android phones default to the native ExoPlayer player. Absent
+  // choices (fresh installs) AND the old Built-in default (empty string —
+  // that was the default, not a stance) both move; real external apps stay.
+  // v2: the first pass stamped the flag before empty-string boxes were
+  // covered, so bump the key to run the wider rule once. TV never reads
+  // externalPlayerPackage so no TV gate is needed beyond isTv.
+  final playbackBox = Hive.box<dynamic>(PlaybackPrefs.boxName);
+  const migrationKey = 'playerEngineMigratedV2';
+  final defaultEngine = resolveDefaultPlayerPackage(
+    isAndroidPhone: Platform.isAndroid && !isTv,
+    storedPackage: playbackBox.get('externalPlayerPackage') as String?,
+    alreadyMigrated: playbackBox.containsKey(migrationKey),
+  );
+  await playbackBox.put(migrationKey, true);
+  if (defaultEngine != null) {
+    await playbackBox.put('externalPlayerPackage', defaultEngine);
+    await playbackBox.put('externalPlayerLabel', 'Android Player');
+  }
   sl.registerSingleton<PlaybackPrefs>(PlaybackPrefs());
   sl.registerLazySingleton<MpvPlayerPool>(
     MpvPlayerPool.new,

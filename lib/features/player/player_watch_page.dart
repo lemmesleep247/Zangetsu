@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
@@ -22,6 +23,8 @@ class PlayerWatchPage extends StatefulWidget {
   const PlayerWatchPage({
     super.key,
     required this.video,
+    this.skipOverlay,
+    this.edgeToEdge = false,
     required this.header,
     this.coverHeaders,
     this.loading = false,
@@ -31,6 +34,7 @@ class PlayerWatchPage extends StatefulWidget {
     this.firstFrameStream,
     this.initialFirstFrame = 0,
     this.ambientFrameStream,
+    this.ambientEnabled = true,
     required this.positionStream,
     required this.durationStream,
     required this.playingStream,
@@ -76,6 +80,8 @@ class PlayerWatchPage extends StatefulWidget {
 
   /// The one video surface, built by the parent. This page only sizes it.
   final Widget video;
+  final Widget Function(bool controlsVisible)? skipOverlay;
+  final bool edgeToEdge;
   final WatchPageHeader header;
   final Map<String, String>? coverHeaders;
 
@@ -87,14 +93,17 @@ class PlayerWatchPage extends StatefulWidget {
   final bool initialBuffering;
 
   /// First-frame signal (player width; null = latch off). While no frame has
-  /// decoded the spinner holds — even if the loading flag lapses between
-  /// progressive resolves, and no tap can dismiss it.
+  /// decoded, the startup artwork takes the place of transport controls.
   final Stream<int?>? firstFrameStream;
   final int initialFirstFrame;
 
   /// Live video frame for the ambient glow (see [_ambientBackdrop]). Null
   /// stream = still art only.
   final Stream<Uint8List?>? ambientFrameStream;
+
+  /// Off hides the glow entirely (also skips the cover-art sample below) —
+  /// the "Ambient player screen" setting.
+  final bool ambientEnabled;
   final Stream<Duration> positionStream;
   final Stream<Duration?> durationStream;
   final Stream<bool> playingStream;
@@ -155,6 +164,8 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
   bool _controlsVisible = true;
   bool _expanded = false;
   Timer? _videoTapTimer;
+  Offset _videoSwipeStart = Offset.zero;
+  final _rotationPull = ValueNotifier(0.0);
   Timer? _videoSeekTimer;
   Timer? _videoFeedbackTimer;
   int _lastVideoTapSide = 0;
@@ -170,6 +181,17 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
 
   late final ScrollController _scroll;
   final ValueNotifier<double> _ambientOpacity = ValueNotifier(1);
+
+  // House pattern (see PlayerSeekBar): the raw position stream fires ~once
+  // per decoded frame, so a StreamBuilder on it rebuilds 60×/s. Sample to
+  // ~4Hz — invisible for a creeping thumb, and scrubbing stays smooth
+  // because it runs off the finger via onSeek, not this stream.
+  // ponytail: same 250ms bucket the fixed seekbar uses, no new machinery.
+  late final Stream<Duration> _sampledPosition = widget.positionStream
+      .map((p) => Duration(milliseconds: (p.inMilliseconds ~/ 250) * 250))
+      .distinct()
+      // Broadcast: the subtree can remount (miniplayer switches) and re-listen.
+      .asBroadcastStream();
 
   /// Row keys by real episode index, so scroll-to-current and jump land
   /// on the right row in list and grid alike.
@@ -204,14 +226,18 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
       if (!mounted || _frameUp || (w ?? 0) <= 0) return;
       setState(() => _frameUp = true);
     });
-    _ambientSub = widget.ambientFrameStream?.listen((bytes) {
-      if (!mounted || bytes == null || bytes.isEmpty) return;
-      unawaited(_applyAmbientBytes(bytes));
-    });
+    if (widget.ambientEnabled) {
+      _ambientSub = widget.ambientFrameStream?.listen((bytes) {
+        if (!mounted || bytes == null || bytes.isEmpty) return;
+        unawaited(_applyAmbientBytes(bytes));
+      });
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToCurrent();
-      _sampledCover = null;
-      unawaited(_sampleCoverArt());
+      if (widget.ambientEnabled) {
+        _sampledCover = null;
+        unawaited(_sampleCoverArt());
+      }
     });
     _playingSub = widget.playingStream.listen((p) {
       if (!mounted || p == _playing) return;
@@ -236,6 +262,7 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
     _ambientSub?.cancel();
     _scroll.dispose();
     _ambientOpacity.dispose();
+    _rotationPull.dispose();
     super.dispose();
   }
 
@@ -554,7 +581,9 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    final w = size.width - 24;
+    final sideInset = widget.edgeToEdge ? 0.0 : 12.0;
+    final w =
+        size.width - MediaQuery.paddingOf(context).horizontal - 2 * sideInset;
     final videoH = (w * 9 / 16).clamp(0.0, size.height * 0.38);
     return Scaffold(
       backgroundColor: Colors.black,
@@ -571,7 +600,7 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
             bottom: false,
             child: Column(
               children: [
-                _video(videoH),
+                _video(videoH, sideInset),
                 Expanded(child: _info()),
               ],
             ),
@@ -585,7 +614,7 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
 
   /// Both glows fade with scrolling; the lower one ends below Comments.
   Widget _ambientBackdrop({bool belowVideo = false}) {
-    if (_glowRev <= 0) return const SizedBox.shrink();
+    if (!widget.ambientEnabled || _glowRev <= 0) return const SizedBox.shrink();
     return Positioned.fill(
       child: IgnorePointer(
         child: ValueListenableBuilder<double>(
@@ -634,15 +663,40 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
     );
   }
 
-  /// Mini player card: inset box with rounded corners, not full-bleed. Same
-  /// transparent scrims as the fullscreen player wash over it so the chrome
-  /// stays legible on bright frames.
-  Widget _video(double h) {
+  /// Transparent scrims keep the controls legible on bright frames.
+  Widget _video(double h, double sideInset) => GestureDetector(
+    dragStartBehavior: DragStartBehavior.down,
+    onVerticalDragStart: (details) {
+      _videoTapTimer?.cancel();
+      _videoSwipeStart = details.globalPosition;
+    },
+    onVerticalDragUpdate: (details) {
+      final movement = _videoSwipeStart - details.globalPosition;
+      _rotationPull.value = movement.dy > movement.dx.abs() ? -movement.dy : 0;
+    },
+    onVerticalDragCancel: () => _rotationPull.value = 0,
+    onVerticalDragEnd: (details) {
+      final movement = _videoSwipeStart - details.globalPosition;
+      _rotationPull.value = 0;
+      if (movement.dy >= watchPageRotationSwipeDistance &&
+          movement.dy > movement.dx.abs()) {
+        widget.onFullscreen();
+      }
+    },
+    child: WatchPageRotationPreview(
+      pull: _rotationPull,
+      child: _videoCard(h, sideInset),
+    ),
+  );
+
+  Widget _videoCard(double h, double sideInset) {
     return Padding(
       // SafeArea already clears the status bar — no double inset.
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+      padding: EdgeInsets.fromLTRB(sideInset, 4, sideInset, 0),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: widget.edgeToEdge
+            ? BorderRadius.zero
+            : BorderRadius.circular(18),
         child: SizedBox(
           key: const ValueKey('watch-video'),
           height: h,
@@ -755,8 +809,8 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
                   stream: widget.bufferingStream,
                   initialData: widget.initialBuffering,
                   builder: (context, snapshot) {
-                    final busy =
-                        widget.loading || !_frameUp || snapshot.data == true;
+                    if (!_frameUp) return const SizedBox.shrink();
+                    final busy = widget.loading || snapshot.data == true;
                     return AnimatedOpacity(
                       opacity: _controlsVisible || busy ? 1 : 0,
                       duration: const Duration(milliseconds: 200),
@@ -847,6 +901,12 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
                     ),
                   ),
                 ),
+              if (widget.skipOverlay case final overlay?)
+                PositionedDirectional(
+                  end: 12,
+                  bottom: 48,
+                  child: overlay(_controlsVisible),
+                ),
               Positioned(left: 0, right: 0, bottom: 0, child: _seekRow()),
             ],
           ),
@@ -855,7 +915,7 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
     );
   }
 
-  /// The only subtree that rebuilds every second.
+  /// Seek row rebuilds at ~4Hz off the sampled position (not per frame).
   Widget _seekRow() {
     return Directionality(
       textDirection: TextDirection.ltr,
@@ -870,7 +930,7 @@ class _PlayerWatchPageState extends State<PlayerWatchPage> {
             builder: (context, durSnap) {
               final total = durSnap.data ?? Duration.zero;
               return StreamBuilder<Duration>(
-                stream: widget.positionStream,
+                stream: _sampledPosition,
                 initialData: widget.initialPosition,
                 builder: (context, posSnap) {
                   final pos = posSnap.data ?? Duration.zero;

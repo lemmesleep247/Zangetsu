@@ -1628,6 +1628,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sortBy => '排序';
 
   @override
+  String get newEpisodeBadges => 'New episode badges';
+
+  @override
+  String get comingSoonShort => 'Soon';
+
+  @override
   String get newCategory => '新分类';
 
   @override
@@ -1837,6 +1843,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get pictureInPicture => '画中画';
 
   @override
+  String get switchPlayer => 'Switch Player';
+
+  @override
   String get cast => '投屏';
 
   @override
@@ -1919,7 +1928,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get audioDelay => '音频延迟';
 
   @override
-  String get androidPlayer => 'Android Player (Experimental)';
+  String get androidPlayer => 'Android Player';
 
   @override
   String get androidPlayerUnavailable => 'Android Player could not start';
@@ -2059,6 +2068,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get noEpisodesAvailableFromThisSource => '此来源没有可用剧集';
+
+  @override
+  String get episodesNotYetAired => 'Episodes not yet aired — check back later';
 
   @override
   String get noEpisodesMatchYourSearch => '没有符合搜索的剧集';
@@ -2798,6 +2810,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get builtInPlayer => '内置播放器';
 
   @override
+  String get mpvPlayer => 'mpv';
+
+  @override
   String get otherApps => '其他应用';
 
   @override
@@ -2836,6 +2851,22 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get customLists => '自定义列表';
+
+  @override
+  String get addToSeries => 'Add to series';
+
+  @override
+  String get noSeries => 'No series';
+
+  @override
+  String get newSeries => 'New series';
+
+  @override
+  String get deleteSeries => 'Delete series';
+
+  @override
+  String get deleteSeriesConfirm =>
+      'Delete this series? Your titles stay on My List.';
 
   @override
   String get notInAny => '未加入任何';
@@ -5600,6 +5631,16 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String get autoPlayerFallbackDescription =>
       'Experimental · Retry failed playback';
+
+  @override
+  String get ambientPlayer => 'Ambient player screen';
+
+  @override
+  String get ambientPlayerDescription =>
+      'Tinted glow behind the portrait player, matched to the video';
+
+  @override
+  String get portraitVideoEdgeToEdge => 'Edge-to-edge portrait video';
 }
 
 /// The translations for Chinese, as used in Taiwan (`zh_TW`).

@@ -1687,6 +1687,12 @@ class AppLocalizationsAr extends AppLocalizations {
   String get sortBy => 'ترتيب حسب';
 
   @override
+  String get newEpisodeBadges => 'New episode badges';
+
+  @override
+  String get comingSoonShort => 'Soon';
+
+  @override
   String get newCategory => 'فئة جديدة';
 
   @override
@@ -1899,6 +1905,9 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get pictureInPicture => 'صورة داخل صورة';
+
+  @override
+  String get switchPlayer => 'Switch Player';
 
   @override
   String get cast => 'البث';
@@ -2127,6 +2136,9 @@ class AppLocalizationsAr extends AppLocalizations {
   @override
   String get noEpisodesAvailableFromThisSource =>
       'لا توجد حلقات متاحة من هذا المصدر';
+
+  @override
+  String get episodesNotYetAired => 'Episodes not yet aired — check back later';
 
   @override
   String get noEpisodesMatchYourSearch => 'لا توجد حلقات تطابق بحثك';
@@ -2893,6 +2905,9 @@ class AppLocalizationsAr extends AppLocalizations {
   String get builtInPlayer => 'المشغّل المدمج';
 
   @override
+  String get mpvPlayer => 'mpv';
+
+  @override
   String get otherApps => 'تطبيقات أخرى';
 
   @override
@@ -2931,6 +2946,22 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get customLists => 'قوائم مخصّصة';
+
+  @override
+  String get addToSeries => 'Add to series';
+
+  @override
+  String get noSeries => 'No series';
+
+  @override
+  String get newSeries => 'New series';
+
+  @override
+  String get deleteSeries => 'Delete series';
+
+  @override
+  String get deleteSeriesConfirm =>
+      'Delete this series? Your titles stay on My List.';
 
   @override
   String get notInAny => 'ليس في أيٍّ منها';
@@ -5822,4 +5853,14 @@ class AppLocalizationsAr extends AppLocalizations {
   @override
   String get autoPlayerFallbackDescription =>
       'Experimental · Retry failed playback';
+
+  @override
+  String get ambientPlayer => 'Ambient player screen';
+
+  @override
+  String get ambientPlayerDescription =>
+      'Tinted glow behind the portrait player, matched to the video';
+
+  @override
+  String get portraitVideoEdgeToEdge => 'Edge-to-edge portrait video';
 }

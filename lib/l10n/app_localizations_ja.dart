@@ -1638,6 +1638,12 @@ class AppLocalizationsJa extends AppLocalizations {
   String get sortBy => '並び替え';
 
   @override
+  String get newEpisodeBadges => 'New episode badges';
+
+  @override
+  String get comingSoonShort => 'Soon';
+
+  @override
   String get newCategory => '新しいカテゴリ';
 
   @override
@@ -1848,6 +1854,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get pictureInPicture => 'ピクチャーインピクチャー';
 
   @override
+  String get switchPlayer => 'Switch Player';
+
+  @override
   String get cast => 'キャスト';
 
   @override
@@ -1931,7 +1940,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get audioDelay => '音声の遅延';
 
   @override
-  String get androidPlayer => 'Android Player (Experimental)';
+  String get androidPlayer => 'Android Player';
 
   @override
   String get androidPlayerUnavailable => 'Android Player could not start';
@@ -2071,6 +2080,9 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get noEpisodesAvailableFromThisSource => 'このソースにエピソードがありません';
+
+  @override
+  String get episodesNotYetAired => 'Episodes not yet aired — check back later';
 
   @override
   String get noEpisodesMatchYourSearch => '検索に一致するエピソードがありません';
@@ -2816,6 +2828,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get builtInPlayer => '内蔵プレーヤー';
 
   @override
+  String get mpvPlayer => 'mpv';
+
+  @override
   String get otherApps => 'ほかのアプリ';
 
   @override
@@ -2854,6 +2869,22 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get customLists => 'カスタムリスト';
+
+  @override
+  String get addToSeries => 'Add to series';
+
+  @override
+  String get noSeries => 'No series';
+
+  @override
+  String get newSeries => 'New series';
+
+  @override
+  String get deleteSeries => 'Delete series';
+
+  @override
+  String get deleteSeriesConfirm =>
+      'Delete this series? Your titles stay on My List.';
 
   @override
   String get notInAny => '未分類';
@@ -5642,4 +5673,14 @@ class AppLocalizationsJa extends AppLocalizations {
   @override
   String get autoPlayerFallbackDescription =>
       'Experimental · Retry failed playback';
+
+  @override
+  String get ambientPlayer => 'Ambient player screen';
+
+  @override
+  String get ambientPlayerDescription =>
+      'Tinted glow behind the portrait player, matched to the video';
+
+  @override
+  String get portraitVideoEdgeToEdge => 'Edge-to-edge portrait video';
 }

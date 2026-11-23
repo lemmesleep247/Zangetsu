@@ -31,6 +31,9 @@ class _ControlsOverlay extends StatelessWidget {
     required this.megaSkipSeconds,
     required this.onMegaSkip,
     this.onPip,
+    this.onSwitchPlayer,
+    required this.ambientActive,
+    required this.onAmbientToggle,
     this.onChat,
     this.onInfo,
     this.infoOpen = false,
@@ -75,6 +78,10 @@ class _ControlsOverlay extends StatelessWidget {
   final int megaSkipSeconds;
   final VoidCallback onMegaSkip;
   final VoidCallback? onPip; // null = PiP unsupported (hide the button)
+  final VoidCallback? onSwitchPlayer; // null = no other engine to switch to
+  final bool
+  ambientActive; // current state of the "Ambient player screen" setting
+  final VoidCallback onAmbientToggle;
   final VoidCallback? onChat; // in-room chat toggle (null = no active room)
   final VoidCallback? onInfo; // toggle the info panel (null = no fields picked)
   final bool infoOpen; // whether the info panel is currently shown
@@ -101,6 +108,9 @@ class _ControlsOverlay extends StatelessWidget {
       sleepActive: sleepActive,
       onSleep: onSleep,
       onPip: onPip,
+      onSwitchPlayer: onSwitchPlayer,
+      ambientActive: ambientActive,
+      onAmbientToggle: onAmbientToggle,
     );
   }
 
@@ -119,6 +129,9 @@ class _ControlsOverlay extends StatelessWidget {
     required bool sleepActive,
     required VoidCallback onSleep,
     required VoidCallback? onPip,
+    required VoidCallback? onSwitchPlayer,
+    required bool ambientActive,
+    required VoidCallback onAmbientToggle,
     bool animatePortraitEntrance = false,
   }) {
     final portrait =
@@ -234,6 +247,27 @@ class _ControlsOverlay extends StatelessWidget {
                             onPip();
                           },
                         ),
+                      if (onSwitchPlayer != null)
+                        _MoreRow(
+                          icon: Icons.swap_horiz_rounded,
+                          label: ctx.l10n.switchPlayer,
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            onSwitchPlayer();
+                          },
+                        ),
+                      _MoreRow(
+                        icon: ambientActive
+                            ? Icons.gradient_rounded
+                            : Icons.gradient_outlined,
+                        label: ambientActive
+                            ? ctx.l10n.ambientPlayer
+                            : '${ctx.l10n.ambientPlayer} · ${ctx.l10n.off}',
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          onAmbientToggle();
+                        },
+                      ),
                     ],
                   ),
                 ),
@@ -568,7 +602,9 @@ class _ControlsOverlay extends StatelessWidget {
                                 builder: (context, _, _) =>
                                     c.isFillerAt(state.currentIndex)
                                     ? const Padding(
-                                        padding: EdgeInsetsDirectional.only(start: 8),
+                                        padding: EdgeInsetsDirectional.only(
+                                          start: 8,
+                                        ),
                                         // No colour passed: TagBadge falls back
                                         // to the app accent, so the badge
                                         // follows the user's theme colour.
@@ -663,39 +699,48 @@ class _ControlsOverlay extends StatelessWidget {
                 ),
                 const SizedBox(width: 24),
               ],
-              StreamBuilder<bool>(
-                stream: c.player.stream.buffering,
-                builder: (context, bSnap) {
-                  final buffering = bSnap.data ?? c.player.state.buffering;
-                  // While buffering, show the spinner IN PLACE OF the play/pause
-                  // button — no more spinner-over-button overlap. 58px matches
-                  // _AnimatedPlayPause's disc exactly, so the episode arrows
-                  // don't twitch every time playback stalls.
-                  if (buffering) {
-                    return const SizedBox(
-                      width: 58,
-                      height: 58,
-                      child: Center(
-                        child: SizedBox(
-                          width: 32,
-                          height: 32,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 3,
-                          ),
-                        ),
-                      ),
-                    );
-                  }
+              StreamBuilder<int?>(
+                stream: c.player.stream.width,
+                initialData: c.player.state.width,
+                builder: (context, frame) {
                   return StreamBuilder<bool>(
-                    stream: c.player.stream.playing,
-                    builder: (context, snap) {
-                      final playing = snap.data ?? c.player.state.playing;
-                      return _AnimatedPlayPause(
-                        playing: playing,
-                        onTap: () {
-                          c.togglePlay();
-                          onInteract();
+                    stream: c.player.stream.buffering,
+                    builder: (context, bSnap) {
+                      final buffering = bSnap.data ?? c.player.state.buffering;
+                      // While buffering, show the spinner IN PLACE OF the play/pause
+                      // button — no more spinner-over-button overlap. 58px matches
+                      // _AnimatedPlayPause's disc exactly, so the episode arrows
+                      // don't twitch every time playback stalls.
+                      if (buffering) {
+                        if ((frame.data ?? 0) <= 0) {
+                          return const SizedBox(width: 58, height: 58);
+                        }
+                        return const SizedBox(
+                          width: 58,
+                          height: 58,
+                          child: Center(
+                            child: SizedBox(
+                              width: 32,
+                              height: 32,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 3,
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+                      return StreamBuilder<bool>(
+                        stream: c.player.stream.playing,
+                        builder: (context, snap) {
+                          final playing = snap.data ?? c.player.state.playing;
+                          return _AnimatedPlayPause(
+                            playing: playing,
+                            onTap: () {
+                              c.togglePlay();
+                              onInteract();
+                            },
+                          );
                         },
                       );
                     },

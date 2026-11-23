@@ -223,6 +223,23 @@ enum PosterTitleStyle { text, artwork }
 /// never reads the preference.
 enum PlayerPresentation { watchPage, fullscreen }
 
+/// One-time default-engine migration target (wired in injector after
+/// [PlaybackPrefs.init]). Returns [PlaybackPrefs.androidPlayerId] when the
+/// stored choice is absent (fresh install) or the old Built-in default (empty
+/// string); a real external package is left alone. Null means keep the box.
+/// Pure so it is unit-testable without Hive.
+String? resolveDefaultPlayerPackage({
+  required bool isAndroidPhone,
+  required String? storedPackage,
+  required bool alreadyMigrated,
+}) {
+  if (alreadyMigrated || !isAndroidPhone) return null;
+  if (storedPackage == null || storedPackage.isEmpty) {
+    return PlaybackPrefs.androidPlayerId;
+  }
+  return null;
+}
+
 class PlaybackPrefs {
   static const String boxName = 'playback_prefs';
   static const String androidPlayerId = 'zangetsu.android.player';
@@ -313,6 +330,11 @@ class PlaybackPrefs {
       _box.get('playerOrientation', defaultValue: 'landscape') as String;
   Future<void> setPlayerOrientation(String value) =>
       _box.put('playerOrientation', value);
+
+  bool get portraitVideoEdgeToEdge =>
+      _box.get('portraitVideoEdgeToEdge', defaultValue: false) as bool;
+  Future<void> setPortraitVideoEdgeToEdge(bool value) =>
+      _box.put('portraitVideoEdgeToEdge', value);
 
   /// The [DeviceOrientation] lock for a saved [playerOrientation] choice.
   /// Unknown values fall back to landscape — never to portrait.
@@ -734,14 +756,6 @@ class PlaybackPrefs {
       _box.get('heroStyle', defaultValue: 'cinematic') as String;
   Future<void> setHeroStyle(String value) => _box.put('heroStyle', value);
 
-  /// Whether to show live scrub-preview thumbnails for ONLINE streams. Offline
-  /// downloads always preview (it's instant and free); online generates frames
-  /// live, which costs a little extra data, so it's user-toggleable.
-  bool get seekPreviewOnline =>
-      _box.get('seekPreviewOnline', defaultValue: false) as bool;
-  Future<void> setSeekPreviewOnline(bool value) =>
-      _box.put('seekPreviewOnline', value);
-
   /// Which fields the in-player info overlay shows (keys from
   /// [kPlayerInfoFields]). Empty = overlay off. Auto-shown with the controls.
   List<String> get playerInfoFields =>
@@ -836,6 +850,8 @@ class PlaybackPrefs {
       _box.get('posterAdultBadge', defaultValue: false) as bool;
   bool get posterProgressBadge =>
       _box.get('posterProgressBadge', defaultValue: false) as bool;
+  bool get posterBehindBadge =>
+      _box.get('posterBehindBadge', defaultValue: true) as bool;
 
   Future<void> _setPosterBadge(String key, bool value) async {
     await _box.put(key, value);
@@ -854,6 +870,8 @@ class PlaybackPrefs {
       _setPosterBadge('posterAdultBadge', value);
   Future<void> setPosterProgressBadge(bool value) =>
       _setPosterBadge('posterProgressBadge', value);
+  Future<void> setPosterBehindBadge(bool value) =>
+      _setPosterBadge('posterBehindBadge', value);
 
   Future<void> setQualityBadges(bool value) async {
     await _box.put('qualityBadges', value);
@@ -903,6 +921,12 @@ class PlaybackPrefs {
       _box.get('autoPlayerFallback', defaultValue: false) as bool;
   Future<void> setAutoPlayerFallback(bool value) =>
       _box.put('autoPlayerFallback', value);
+
+  /// The mpv-style ambient glow behind the portrait player (both mpv and the
+  /// native player sample the frame and tint the backdrop). On by default.
+  bool get ambientPlayer =>
+      _box.get('ambientPlayer', defaultValue: true) as bool;
+  Future<void> setAmbientPlayer(bool value) => _box.put('ambientPlayer', value);
 
   /// Default player. Empty string = the built-in player; otherwise the package
   /// id of an external player (e.g. 'org.videolan.vlc') to hand streams to.

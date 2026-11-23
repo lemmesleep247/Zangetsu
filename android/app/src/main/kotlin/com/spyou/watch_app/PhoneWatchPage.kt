@@ -1,15 +1,24 @@
 package com.spyou.watch_app
 
 import android.app.AlertDialog
+import android.app.Dialog
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
 import android.widget.*
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 
@@ -60,7 +69,13 @@ internal class PhoneWatchPage(
         adapter.notifyDataSetChanged()
     }
     private val surface = (data["surface"] as? Number)?.toInt() ?: 0xFF202024.toInt()
+    private val episodeSurface = (data["episodeSurface"] as? Number)?.toInt() ?: surface
+    private val episodeDialogSurface = (data["episodeDialogSurface"] as? Number)?.toInt() ?: episodeSurface
     private val secondary = (data["secondary"] as? Number)?.toInt() ?: 0xFFBDBDC6.toInt()
+    private val primary = (data["episodeForeground"] as? Number)?.toInt()
+        ?: context.getColor(R.color.phone_player_on_surface)
+    private var episodeOptions: PopupWindow? = null
+    private var episodeSearch: Dialog? = null
     private val images = PhoneWatchImages(context,
         (data["coverHeaders"] as? Map<*, *>)?.entries?.mapNotNull { (key, value) ->
             if (key is String && value is String) key to value else null
@@ -90,8 +105,9 @@ internal class PhoneWatchPage(
         listOf(R.id.watch_action_server, R.id.watch_action_audio, R.id.watch_action_subtitles, R.id.watch_action_more)
             .forEachIndexed { i, id ->
                 header.findViewById<Button>(id).apply {
-                    background = shape(999, surface)
+                    background = pressHighlight(999, surface)
                     backgroundTintList = null
+                    foreground = null
                     isAllCaps = false
                     textSize = 15f
                     minWidth = 0
@@ -129,9 +145,14 @@ internal class PhoneWatchPage(
     private fun shape(radius: Int, color: Int) = GradientDrawable().apply {
         setColor(color); cornerRadius = dp(radius).toFloat()
     }
+    private fun pressHighlight(radius: Int, fill: Int = Color.TRANSPARENT) = RippleDrawable(
+        ColorStateList.valueOf(0x1AFFFFFF),
+        shape(radius, fill),
+        shape(radius, Color.WHITE),
+    )
     private fun button(id: Int, glyph: String, action: () -> Unit) {
         header.findViewById<ImageButton>(id).apply {
-            background = shape(999, surface)
+            background = pressHighlight(999, surface)
             setImageDrawable(icon(glyph))
             setOnClickListener { action() }
             PhoneWatchMotion.press(this)
@@ -196,37 +217,148 @@ internal class PhoneWatchPage(
     private fun more() {
         val anchor = header.findViewById<View>(R.id.watch_episode_more)
         val autoplay = header.findViewById<CheckBox>(R.id.watch_autoplay)
-        PopupMenu(context, anchor).apply {
-            menu.add(0, 1, 0, R.string.phone_player_watch_reverse).apply { isCheckable = true; isChecked = reversed }
-            menu.add(0, 2, 1, R.string.phone_player_watch_autoplay).apply { isCheckable = true; isChecked = autoplay.isChecked }
-            setOnMenuItemClickListener {
-                if (it.itemId == 1) { reversed = !reversed; range = 0; rebuild() }
-                else autoplay.isChecked = !autoplay.isChecked
-                true
-            }
-        }.show()
+        episodeOptions?.dismiss()
+        val items = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        val popup = PopupWindow(items, dp(224), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            setBackgroundDrawable(shape(14, episodeSurface))
+            elevation = dp(6).toFloat()
+            isOutsideTouchable = true
+            setOnDismissListener { episodeOptions = null }
+        }
+        fun row(label: Int, glyph: Int, checked: Boolean, action: () -> Unit) {
+            items.addView(CheckedTextView(context).apply {
+                setText(label)
+                setTextColor(primary)
+                textSize = 14f
+                gravity = Gravity.CENTER_VERTICAL
+                minHeight = dp(48)
+                setPaddingRelative(dp(16), dp(6), dp(16), dp(6))
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                isFocusable = true
+                background = pressHighlight(8)
+                val leading = context.getDrawable(glyph)?.mutate()?.apply {
+                    setTint(primary)
+                    setBounds(0, 0, dp(20), dp(20))
+                }
+                setCompoundDrawablesRelative(leading, null, null, null)
+                compoundDrawablePadding = dp(12)
+                checkMarkDrawable = context.getDrawable(R.drawable.phone_player_check)?.mutate()?.apply {
+                    setTint(primary)
+                    alpha = if (checked) 255 else 0
+                }
+                isChecked = checked
+                setOnClickListener { popup.dismiss(); action() }
+            })
+        }
+        row(R.string.phone_player_watch_reverse, R.drawable.phone_player_reverse, reversed) {
+            reversed = !reversed
+            range = 0
+            rebuild()
+        }
+        row(R.string.phone_player_watch_autoplay, R.drawable.ic_pip_play, autoplay.isChecked) {
+            autoplay.isChecked = !autoplay.isChecked
+        }
+        episodeOptions = popup
+        popup.showAsDropDown(anchor, 0, -anchor.height, Gravity.END)
     }
     private fun search() {
+        episodeSearch?.dismiss()
+        val dialog = Dialog(context, android.R.style.Theme_DeviceDefault_Dialog_NoActionBar)
         val input = EditText(context).apply {
             id = android.R.id.edit
             hint = context.getString(R.string.phone_player_watch_find_hint)
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             isSingleLine = true
+            imeOptions = EditorInfo.IME_ACTION_GO
+            setTextColor(primary)
+            setHintTextColor(secondary)
+            textSize = 16f
+            background = null
+            setPadding(0, dp(12), 0, dp(12))
         }
-        AlertDialog.Builder(context, R.style.PhonePlayerDialog).setTitle(R.string.phone_player_watch_search).setView(input)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                val number = input.text.toString().trim().toIntOrNull() ?: return@setPositiveButton
-                val ordered = ordered()
-                val found = ordered.indexOfFirst { it.number?.toInt() == number }
-                val target = if (found >= 0) found else number - 1
-                if (target !in ordered.indices) {
-                    Toast.makeText(context, R.string.phone_player_watch_no_match, Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
-                }
-                range = target / 50
-                rebuild()
-                manager.scrollToPositionWithOffset(target % 50 + 1, dp(8))
-            }.setNegativeButton(android.R.string.cancel, null).show().also { PhoneWatchMotion.enter(it) }
+        fun submit() {
+            dialog.dismiss()
+            val number = input.text.toString().trim().toIntOrNull() ?: return
+            val ordered = ordered()
+            val found = ordered.indexOfFirst { it.number?.toInt() == number }
+            val target = if (found >= 0) found else number - 1
+            if (target !in ordered.indices) {
+                Toast.makeText(context, R.string.phone_player_watch_no_match, Toast.LENGTH_SHORT).show()
+                return
+            }
+            range = target / 50
+            rebuild()
+            manager.scrollToPositionWithOffset(target % 50 + 1, dp(8))
+        }
+        input.setOnEditorActionListener { _, action, _ ->
+            if (action != EditorInfo.IME_ACTION_GO) return@setOnEditorActionListener false
+            submit()
+            true
+        }
+        val actions = LinearLayout(context).apply { gravity = Gravity.END }
+        fun action(id: Int, label: Int, onClick: () -> Unit) {
+            actions.addView(Button(context, null, android.R.attr.borderlessButtonStyle).apply {
+                this.id = id
+                setText(label)
+                setTextColor(primary)
+                textSize = 14f
+                isAllCaps = false
+                minWidth = dp(64)
+                minimumWidth = dp(64)
+                minHeight = dp(48)
+                minimumHeight = dp(48)
+                stateListAnimator = null
+                background = RippleDrawable(
+                    ColorStateList.valueOf(primary and 0x00FFFFFF or 0x1F000000),
+                    null,
+                    shape(999, Color.WHITE),
+                )
+                setPaddingRelative(dp(12), 0, dp(12), 0)
+                setOnClickListener { onClick() }
+            })
+        }
+        action(android.R.id.button2, android.R.string.cancel) { dialog.dismiss() }
+        action(android.R.id.button1, R.string.phone_player_watch_go, ::submit)
+        dialog.setContentView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = shape(28, episodeDialogSurface)
+            setPadding(dp(24), dp(24), dp(24), dp(24))
+            addView(TextView(context).apply {
+                setText(R.string.phone_player_watch_search)
+                setTextColor(primary)
+                textSize = 24f
+                ViewCompat.setAccessibilityHeading(this, true)
+            })
+            addView(input, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(16) })
+            addView(View(context).apply { setBackgroundColor(primary) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(2)))
+            addView(actions, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(24) })
+        })
+        episodeSearch = dialog
+        dialog.setOnDismissListener { episodeSearch = null }
+        input.requestFocus()
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setDimAmount(.54f)
+            setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        dialog.show()
+        dialog.window?.let { window ->
+            val width = list.width.takeIf { it > dp(32) } ?: context.resources.displayMetrics.widthPixels
+            val dialogWidth = (width - dp(80)).coerceIn(dp(280), dp(560))
+            window.setLayout(minOf(dialogWidth, width - dp(32)), ViewGroup.LayoutParams.WRAP_CONTENT)
+            WindowCompat.getInsetsController(window, input).show(WindowInsetsCompat.Type.ime())
+        }
+        PhoneWatchMotion.enter(dialog)
     }
     private fun open(ep: PhoneWatchEpisode) {
         if (ep.unavailable.isEmpty()) onEpisode(ep.index)
@@ -322,5 +454,10 @@ internal class PhoneWatchPage(
             holder.itemView.findViewWithTag<ImageView>("thumbnail")?.let { images.clear(it) }
         }
     }
-    fun close() { images.close(); list.adapter = null }
+    fun close() {
+        episodeOptions?.dismiss()
+        episodeSearch?.dismiss()
+        images.close()
+        list.adapter = null
+    }
 }

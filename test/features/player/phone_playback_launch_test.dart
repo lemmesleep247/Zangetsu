@@ -135,6 +135,11 @@ void main() {
       int nativeCacheMb = 128,
       bool diskCacheEnabled = false,
       int diskCacheGb = 2,
+      bool autoPip = false,
+      bool holdSpeed = true,
+      bool portraitVideoEdgeToEdge = false,
+      String? loadingArtwork,
+      String? loadingLogo,
     }) => phonePlayerArgs(
       source: source ?? _src(),
       positionMs: positionMs,
@@ -149,7 +154,12 @@ void main() {
       nativeCacheMb: nativeCacheMb,
       diskCacheEnabled: diskCacheEnabled,
       diskCacheGb: diskCacheGb,
+      autoPip: autoPip,
       defaultSpeed: 1.0,
+      holdSpeed: holdSpeed,
+      portraitVideoEdgeToEdge: portraitVideoEdgeToEdge,
+      loadingArtwork: loadingArtwork,
+      loadingLogo: loadingLogo,
       bufferParams: const {
         'minBufferMs': 15000,
         'maxBufferMs': 50000,
@@ -169,6 +179,17 @@ void main() {
       megaSkip: megaSkip,
       megaSkipSeconds: megaSkipSeconds,
     );
+
+    test('native launch carries optional artwork and logo separately', () {
+      expect(args(), isNot(contains('loadingArtwork')));
+      expect(args(), isNot(contains('loadingLogo')));
+      final payload = args(
+        loadingArtwork: 'https://example.com/still.jpg',
+        loadingLogo: 'https://example.com/logo.png',
+      );
+      expect(payload['loadingArtwork'], 'https://example.com/still.jpg');
+      expect(payload['loadingLogo'], 'https://example.com/logo.png');
+    });
 
     test(
       'MegaSkip preserves its toggle and amount separately from double-tap seeking',
@@ -290,6 +311,47 @@ void main() {
       expect(a['playerOrientation'], 'system');
       expect(a['showDescription'], 'The show saga.');
       expect(a['availableCategories'], ['sub', 'dub']);
+    });
+
+    test('carries autoPip from prefs for the native player', () {
+      expect(args()['autoPip'], isFalse);
+      expect(args(autoPip: true)['autoPip'], isTrue);
+    });
+
+    test('carries the hold-to-speed preference for the native player', () {
+      expect(args()['holdSpeed'], isTrue);
+      expect(args(holdSpeed: false)['holdSpeed'], isFalse);
+    });
+
+    test('portrait video margins are opt-in for the native player', () {
+      expect(args()['portraitVideoEdgeToEdge'], isFalse);
+      expect(args(portraitVideoEdgeToEdge: true)['portraitVideoEdgeToEdge'], isTrue);
+    });
+
+    test('carries the subtitle position for the native player', () {
+      expect(args()['subtitlePosition'], 95);
+      final custom = phonePlayerArgs(
+        title: 'A Show',
+        episodeLabel: 'Episode 1',
+        episodeLabels: const ['Episode 1'],
+        startIndex: 0,
+        accentColor: 0xFFFF4D5E,
+        softwareDecoding: false,
+        defaultSpeed: 1.0,
+        bufferParams: const {},
+        subtitleScale: 1.0,
+        subtitleFgColor: 0xFFFFFFFF,
+        subtitleBgColor: 0x00000000,
+        subtitleEdgeType: 1,
+        subtitleEdgeColor: 0xFF000000,
+        subtitlePreference: '',
+        subtitlePosition: 40,
+        autoResume: true,
+        keepScreenOn: true,
+        autoplayNext: true,
+        seekSeconds: 10,
+      );
+      expect(custom['subtitlePosition'], 40);
     });
 
     test('carries phone playback settings and subtitle metadata', () {
@@ -711,4 +773,90 @@ void main() {
       );
     },
   );
+
+  group('autoDownloadedPhoneSubtitle', () {
+    test('skipped when the source already has subtitles', () async {
+      var called = false;
+      final got = await autoDownloadedPhoneSubtitle(
+        existing: const [Subtitle(url: 'https://x/a.srt', lang: 'en')],
+        autoDownload: true,
+        hasIdentifiers: true,
+        iso2: 'eng',
+        fetch: () async {
+          called = true;
+          return [];
+        },
+      );
+      expect(got, isNull);
+      expect(called, isFalse);
+    });
+
+    test('skipped when the preference is off or nothing identifies the title',
+        () async {
+      var called = false;
+      Future<List<({String lang, String url})>> noFetch() async {
+        called = true;
+        return [];
+      }
+
+      expect(
+        await autoDownloadedPhoneSubtitle(
+          existing: const [],
+          autoDownload: false,
+          hasIdentifiers: true,
+          iso2: 'eng',
+          fetch: noFetch,
+        ),
+        isNull,
+      );
+      expect(
+        await autoDownloadedPhoneSubtitle(
+          existing: const [],
+          autoDownload: true,
+          hasIdentifiers: false,
+          iso2: 'eng',
+          fetch: noFetch,
+        ),
+        isNull,
+      );
+      expect(called, isFalse);
+    });
+
+    test('maps the first result to a default track', () async {
+      final got = await autoDownloadedPhoneSubtitle(
+        existing: const [],
+        autoDownload: true,
+        hasIdentifiers: true,
+        iso2: 'eng',
+        fetch: () async => [(lang: 'en', url: 'https://x/b.srt')],
+      );
+      expect(got?.url, 'https://x/b.srt');
+      expect(got?.lang, 'en');
+      expect(got?.format, 'srt');
+      expect(got?.isDefault, isTrue);
+    });
+
+    test('empty results and blank urls yield nothing', () async {
+      expect(
+        await autoDownloadedPhoneSubtitle(
+          existing: const [],
+          autoDownload: true,
+          hasIdentifiers: true,
+          iso2: 'eng',
+          fetch: () async => [],
+        ),
+        isNull,
+      );
+      expect(
+        await autoDownloadedPhoneSubtitle(
+          existing: const [],
+          autoDownload: true,
+          hasIdentifiers: true,
+          iso2: 'eng',
+          fetch: () async => [(lang: '', url: '  ')],
+        ),
+        isNull,
+      );
+    });
+  });
 }

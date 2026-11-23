@@ -1683,6 +1683,12 @@ class AppLocalizationsId extends AppLocalizations {
   String get sortBy => 'Urutkan berdasarkan';
 
   @override
+  String get newEpisodeBadges => 'New episode badges';
+
+  @override
+  String get comingSoonShort => 'Soon';
+
+  @override
   String get newCategory => 'Kategori baru';
 
   @override
@@ -1897,6 +1903,9 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String get pictureInPicture => 'Gambar dalam gambar';
+
+  @override
+  String get switchPlayer => 'Switch Player';
 
   @override
   String get cast => 'Siaran';
@@ -2125,6 +2134,9 @@ class AppLocalizationsId extends AppLocalizations {
   @override
   String get noEpisodesAvailableFromThisSource =>
       'Tidak ada episode dari sumber ini';
+
+  @override
+  String get episodesNotYetAired => 'Episodes not yet aired — check back later';
 
   @override
   String get noEpisodesMatchYourSearch =>
@@ -2899,6 +2911,9 @@ class AppLocalizationsId extends AppLocalizations {
   String get builtInPlayer => 'Pemutar bawaan';
 
   @override
+  String get mpvPlayer => 'mpv';
+
+  @override
   String get otherApps => 'Aplikasi lain';
 
   @override
@@ -2937,6 +2952,22 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String get customLists => 'Daftar kustom';
+
+  @override
+  String get addToSeries => 'Add to series';
+
+  @override
+  String get noSeries => 'No series';
+
+  @override
+  String get newSeries => 'New series';
+
+  @override
+  String get deleteSeries => 'Delete series';
+
+  @override
+  String get deleteSeriesConfirm =>
+      'Delete this series? Your titles stay on My List.';
 
   @override
   String get notInAny => 'Tidak ada';
@@ -5762,4 +5793,14 @@ class AppLocalizationsId extends AppLocalizations {
   @override
   String get autoPlayerFallbackDescription =>
       'Experimental · Retry failed playback';
+
+  @override
+  String get ambientPlayer => 'Ambient player screen';
+
+  @override
+  String get ambientPlayerDescription =>
+      'Tinted glow behind the portrait player, matched to the video';
+
+  @override
+  String get portraitVideoEdgeToEdge => 'Edge-to-edge portrait video';
 }

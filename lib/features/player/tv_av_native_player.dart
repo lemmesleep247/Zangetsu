@@ -32,6 +32,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/tv/tv_playback_failure.dart';
 import '../../core/zmode/playback_resolver.dart';
 import '../../core/zmode/source_matcher.dart';
+import 'playback_loading_title.dart' show playbackArtworkHeaders;
 import 'subtitle_font_service.dart';
 
 /// Launches the Apple TV native player over `zangetsu/tv_player`.
@@ -61,6 +62,9 @@ class TvAvNativePlayer {
   static Map<String, String>? _coverHeaders;
   static int? _malId;
   static String? _skipTitle;
+  static String? _skipImdbId;
+  static int? _skipTmdbId;
+  static bool _skipIsTv = false;
   static TvPlaybackTracker? _tracker;
   static List<SubtitleSearchResult> _subResults = const [];
   static String _category = 'sub';
@@ -91,6 +95,9 @@ class TvAvNativePlayer {
     String? showTitle,
     String? cover,
     Map<String, String>? coverHeaders,
+    String? loadingArtwork,
+    String? loadingLogo,
+    void Function()? onOpeningPlayer,
     String category = 'sub',
     List<String> availableCategories = const [],
     int? malId,
@@ -119,6 +126,9 @@ class TvAvNativePlayer {
     _coverHeaders = coverHeaders;
     _malId = malId;
     _skipTitle = scrobbleTitle;
+    _skipImdbId = imdbId;
+    _skipTmdbId = tmdbId;
+    _skipIsTv = tmdbIsTv;
     _category = category;
     _resume = resume;
     _tracker = TvPlaybackTracker(
@@ -199,12 +209,25 @@ class TvAvNativePlayer {
       );
     }
 
+    final startupArtwork = [
+      ep.thumbnail,
+      loadingArtwork,
+      cover,
+    ].whereType<String>().where((url) => url.trim().isNotEmpty).firstOrNull;
     Map<String, dynamic>? res;
     try {
+      onOpeningPlayer?.call();
       res = await _ch.invokeMapMethod<String, dynamic>('launch', {
         ..._streamPayload(src, mark?.position.inMilliseconds ?? 0),
         'playerMode': 'system',
         'title': _showTitle,
+        'loadingArtwork': startupArtwork,
+        'loadingLogo': ?loadingLogo,
+        'loadingArtworkHeaders': ?playbackArtworkHeaders(
+          startupArtwork,
+          cover,
+          coverHeaders,
+        ),
         'episodeLabel': _episodeLabel(ep),
         'episodeLabels': [for (final e in _episodes) _episodeLabel(e)],
         'episodeCount': _episodes.length,
@@ -561,17 +584,29 @@ class TvAvNativePlayer {
         final args = (call.arguments as Map).cast<String, dynamic>();
         final index = (args['index'] as num?)?.toInt() ?? -1;
         final durMs = (args['durationMs'] as num?)?.toInt() ?? 0;
-        if (_skipTitle == null || index < 0 || index >= _episodes.length) {
+        if (index < 0 || index >= _episodes.length) {
           return const <Map>[];
         }
         final ep = _episodes[index];
         final epNo = ep.number?.toInt() ?? (index + 1);
         try {
-          final skips = await sl<SkipService>().skipTimes(
-            title: _skipTitle!,
-            episode: epNo,
-            duration: Duration(milliseconds: durMs),
-          );
+          final service = sl<SkipService>();
+          final duration = Duration(milliseconds: durMs);
+          final title = _skipTitle;
+          final skips = title != null
+              ? await service.skipTimes(
+                  title: title,
+                  episode: epNo,
+                  duration: duration,
+                )
+              : await service.introDbTimes(
+                  imdbId: _skipImdbId,
+                  tmdbId: _skipTmdbId,
+                  isTv: _skipIsTv,
+                  season: ep.season,
+                  episode: ep.number,
+                  duration: duration,
+                );
           return [
             for (final s in skips)
               {

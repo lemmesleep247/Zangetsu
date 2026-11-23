@@ -11,11 +11,13 @@ import 'package:watch_app/features/player/watch_page_motion.dart';
 import 'package:watch_app/features/player/watch_page_info.dart';
 
 PlayerWatchPage _page({
+  bool edgeToEdge = false,
   bool isMovie = false,
   bool loading = false,
   String? loadingStatus,
   String? serverName,
   Stream<bool>? bufferingStream,
+  Stream<int?>? firstFrameStream,
   String? description = 'A great episode.',
   String? nextTitle = 'The Next One',
   List<WatchPageEpisode> episodes = const [],
@@ -41,6 +43,7 @@ PlayerWatchPage _page({
   void Function(int?)? onSelectSeason,
 }) {
   return PlayerWatchPage(
+    edgeToEdge: edgeToEdge,
     isMovie: isMovie,
     loading: loading,
     loadingStatus: loadingStatus,
@@ -59,6 +62,7 @@ PlayerWatchPage _page({
     initialDuration: Duration.zero,
     hasPrevious: true,
     bufferingStream: bufferingStream,
+    firstFrameStream: firstFrameStream,
     ambientFrameStream: ambientFrameStream,
     nextThumb: null,
     nextLabel: 'S1 E2',
@@ -95,10 +99,87 @@ Future<void> _pump(WidgetTester tester, PlayerWatchPage page) {
 }
 
 void main() {
+  testWidgets('startup hides the spinner and rebuffering shows it', (
+    tester,
+  ) async {
+    final frames = StreamController<int?>();
+    final buffering = StreamController<bool>.broadcast();
+    addTearDown(frames.close);
+    addTearDown(buffering.close);
+    await _pump(
+      tester,
+      _page(firstFrameStream: frames.stream, bufferingStream: buffering.stream),
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    frames.add(1920);
+    buffering.add(true);
+    await tester.pump();
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+  });
+
+  testWidgets('portrait video uses the full width only when enabled', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final video = find.byKey(const ValueKey('watch-video'));
+
+    await _pump(tester, _page());
+    expect(tester.getRect(video).left, 12);
+    expect(tester.getRect(video).right, 388);
+
+    await _pump(tester, _page(edgeToEdge: true));
+    expect(tester.getRect(video).left, 0);
+    expect(tester.getRect(video).right, 400);
+    expect(tester.getSize(video).height, 225);
+  });
+
   Offset videoSide(WidgetTester tester, double side) {
     final rect = tester.getRect(find.byKey(const ValueKey('watch-video')));
     return Offset(rect.left + rect.width * side, rect.top + rect.height * .24);
   }
+
+  testWidgets('only an upward video swipe opens fullscreen', (tester) async {
+    var entered = 0;
+    await _pump(tester, _page(onFullscreen: () => entered++));
+    final video = tester.getRect(find.byKey(const ValueKey('watch-video')));
+    await tester.dragFrom(video.center, const Offset(0, 85));
+    expect(entered, 0);
+    await tester.dragFrom(video.center, const Offset(-100, 0));
+    expect(entered, 0);
+    await tester.dragFrom(video.center, const Offset(0, -100));
+    expect(entered, 1);
+  });
+
+  testWidgets('rotation pull previews progress and snaps back below the limit', (
+    tester,
+  ) async {
+    var entered = 0;
+    await _pump(tester, _page(onFullscreen: () => entered++));
+    final finder = find.byKey(const ValueKey('watch-video'));
+    final original = tester.getRect(finder);
+    final gesture = await tester.startGesture(original.center);
+    await gesture.moveBy(const Offset(0, -45));
+    await tester.pump();
+    expect(tester.getRect(finder).top, lessThan(original.top));
+    final progress = find.byKey(const ValueKey('watch-rotation-pull-progress'));
+    expect(tester.widget<LinearProgressIndicator>(progress).value, lessThan(1));
+    expect(entered, 0);
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(tester.getRect(finder), original);
+    expect(progress, findsNothing);
+    expect(entered, 0);
+
+    final longPull = await tester.startGesture(original.center);
+    await longPull.moveBy(const Offset(0, -75));
+    await tester.pump();
+    expect(tester.widget<LinearProgressIndicator>(progress).value, 1);
+    expect(entered, 0);
+    await longPull.up();
+    expect(entered, 1);
+  });
 
   testWidgets('video double taps seek left and right by the saved step', (
     tester,
@@ -763,53 +844,6 @@ void main() {
 
     // Silent streams must not read 00:00 — the handoff carries the values.
     expect(find.text('01:30 / 24:00'), findsOneWidget);
-  });
-
-  testWidgets('spinner stays up until the first frame, loading or not', (
-    tester,
-  ) async {
-    await _pump(
-      tester,
-      PlayerWatchPage(
-        video: const ColoredBox(color: Colors.black),
-        header: const WatchPageHeader(
-          title: 'T',
-          subtitle: 'S',
-          description: null,
-        ),
-        loading: false,
-        firstFrameStream: Stream<int?>.empty(),
-        initialFirstFrame: 0,
-        positionStream: Stream<Duration>.empty(),
-        durationStream: Stream<Duration?>.empty(),
-        playingStream: Stream.value(false),
-        initialPlaying: false,
-        initialPosition: Duration.zero,
-        initialDuration: Duration.zero,
-        hasPrevious: false,
-        nextThumb: null,
-        nextLabel: null,
-        nextTitle: null,
-        autoplay: true,
-        episodes: const [],
-        onOpenEpisode: (_) {},
-        onTogglePlay: () {},
-        onSeek: (_) {},
-        onPrevious: () {},
-        onNext: () {},
-        onFullscreen: () {},
-        onBack: () {},
-        onServer: () {},
-        onAudio: () {},
-        onSubtitles: () {},
-        onMore: () {},
-        onComments: () {},
-        onAutoplayChanged: (_) {},
-      ),
-    );
-
-    // No picture yet — the spinner holds even though nothing is "loading".
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
   });
 
   testWidgets('dead rows show their reason and ignore taps', (tester) async {

@@ -15,6 +15,7 @@ import '../../core/app_mode.dart';
 import '../../core/di/injector.dart';
 import '../../core/playback/my_list.dart';
 import '../../core/playback/category_store.dart';
+import '../../core/playback/series_groups.dart';
 import '../../core/playback/watch_history.dart';
 import '../../core/profiles/viewer_profile.dart';
 import '../../core/profiles/viewer_profile_avatar.dart';
@@ -46,22 +47,24 @@ import 'mode_bar.dart';
 import '../../core/ui/dock_visibility.dart';
 import 'root_shell_tv.dart';
 
-/// Shared pages for [RootShell] (phone bottom nav) and [RootShellTv] (TV left
-/// rail). TV uses Settings at index 3; phone uses its viewer overview instead.
+/// Main pages for [RootShellTv]'s navigation rail.
 ///
 /// [searchFocusSignal] is bumped each time the Search rail item is
 /// (re)selected on TV so the embedded search screen can auto-focus its
-/// field. [RootShell] always passes null — a tapped Search dock tab just
-/// shows its page, and the Home header icon pushes a fresh one.
+/// field.
 ///
 /// [searchFixedSourceId] pins the Search page to one source catalogue. TV
 /// leaves it null; the phone dock passes [dockSearchFixedSourceId].
 List<Widget> buildShellPages(
   ValueNotifier<int>? searchFocusSignal, {
   bool homeIsActive = true,
+  bool deferHomeStartupPrompts = false,
   String? searchFixedSourceId,
 }) => [
-  HomeScreen(isTabActive: homeIsActive),
+  HomeScreen(
+    isTabActive: homeIsActive,
+    deferStartupPrompts: deferHomeStartupPrompts,
+  ),
   SearchScreen(
     showBack: false,
     focusSignal: searchFocusSignal,
@@ -111,7 +114,10 @@ class _RootShellState extends State<RootShell>
   ///
   /// Starts wherever the user chose to land; [NavPrefs.startTab] falls back to
   /// the leftmost tab, so an untouched install still opens on Home.
-  late DockTab _tab = _navPrefs.startTab;
+  late final _selectedTab = ValueNotifier(_navPrefs.startTab);
+  DockTab get _tab => _selectedTab.value;
+  final _visitedTabs = <DockTab>{};
+  String? _visitedTabsProfileId;
 
   /// Whether the floating mode bar (Anime / Movie/TV / Manga / Novel) is
   /// showing above the dock. Z Mode only — the centre button that toggles it
@@ -135,6 +141,24 @@ class _RootShellState extends State<RootShell>
   /// within 2s exits the app; the first just shows the "press back again" toast.
   DateTime? _lastBackPress;
   DateTime? _lastProfileTap;
+  bool _deferTabsForPicker = false;
+  late final _homePage = HomeScreen(activeDockTab: _selectedTab);
+  late final _deferredHomePage = HomeScreen(
+    activeDockTab: _selectedTab,
+    deferStartupPrompts: true,
+  );
+  late final _profilePage = ViewerProfileHomeScreen(
+    onProfileSelected: () {
+      setState(() => _deferTabsForPicker = true);
+      _onTabSelected(DockTab.home);
+    },
+    onPickerClosed: () {
+      if (mounted && _deferTabsForPicker) {
+        setState(() => _deferTabsForPicker = false);
+      }
+    },
+  );
+  SearchScreen _searchPage = const SearchScreen(showBack: false);
 
   /// Tab-switch entrance: the visible page swaps immediately and the INCOMING
   /// tab fades + slides up into place (200ms, ease-out). We never fade the old
@@ -182,7 +206,8 @@ class _RootShellState extends State<RootShell>
     if (!sl.isRegistered<MyListStore>() ||
         !sl.isRegistered<WatchHistory>() ||
         !sl.isRegistered<ReadHistory>() ||
-        !sl.isRegistered<CategoryStore>()) {
+        !sl.isRegistered<CategoryStore>() ||
+        !sl.isRegistered<SeriesGroupStore>()) {
       return;
     }
     try {
@@ -197,6 +222,7 @@ class _RootShellState extends State<RootShell>
         sl<WatchHistory>().pullFromCloud(forProfileId: profileId),
         sl<ReadHistory>().pullFromCloud(forProfileId: profileId),
         sl<CategoryStore>().pullFromCloud(),
+        sl<SeriesGroupStore>().pullFromCloud(),
       ]).timeout(const Duration(seconds: 8));
       if (mounted && sl<ViewerProfileStore>().activeId == profileId) {
         sl<HomeCubit>().relayout();
@@ -217,7 +243,7 @@ class _RootShellState extends State<RootShell>
     setState(() {
       _modeBarOpen = false;
       final visible = _visibleTabs();
-      if (!visible.contains(_tab)) _tab = visible.first;
+      if (!visible.contains(_tab)) _selectedTab.value = visible.first;
     });
   }
 
@@ -232,7 +258,7 @@ class _RootShellState extends State<RootShell>
     }
     final visible = _visibleTabs();
     setState(() {
-      if (!visible.contains(_tab)) _tab = visible.first;
+      if (!visible.contains(_tab)) _selectedTab.value = visible.first;
     });
   }
 
@@ -252,6 +278,7 @@ class _RootShellState extends State<RootShell>
       );
     }
     _switchCtrl.dispose();
+    _selectedTab.dispose();
     super.dispose();
   }
 
@@ -275,7 +302,7 @@ class _RootShellState extends State<RootShell>
     }
     if (tab == _tab) return; // Re-tapping the current tab: no transition.
     DockScrollCollapse.reset();
-    setState(() => _tab = tab);
+    _selectedTab.value = tab;
     _switchCtrl.forward(from: 0);
     if (tab == DockTab.myList && sl.isRegistered<MyListStore>()) {
       unawaited(sl<MyListStore>().pullFromCloud());
@@ -325,12 +352,25 @@ class _RootShellState extends State<RootShell>
   /// catalogue or metadata) — [dockSearchFixedSourceId], re-read on every
   /// rebuild so it follows catalogue picks. TV keeps its Settings rail
   /// destination.
-  List<Widget> _pagesFor(List<DockTab> tabs, String profileId) {
-    final shared = buildShellPages(
-      null,
-      homeIsActive: _tab == DockTab.home,
-      searchFixedSourceId: dockSearchFixedSourceId(),
-    );
+  List<Widget> _pagesFor(
+    List<DockTab> tabs,
+    String profileId, {
+    required bool deferInactiveTabs,
+  }) {
+    if (_visitedTabsProfileId != profileId) {
+      _visitedTabsProfileId = profileId;
+      _visitedTabs.clear();
+    }
+    _visitedTabs
+      ..retainAll(tabs)
+      ..add(tabs.contains(_tab) ? _tab : tabs.first);
+
+    if (_visitedTabs.contains(DockTab.search)) {
+      final sourceId = dockSearchFixedSourceId();
+      if (sourceId != _searchPage.fixedSourceId) {
+        _searchPage = SearchScreen(showBack: false, fixedSourceId: sourceId);
+      }
+    }
     return [
       for (final t in tabs)
         KeyedSubtree(
@@ -340,17 +380,20 @@ class _RootShellState extends State<RootShell>
           key: ValueKey(
             '$profileId:${t.name}:${ThemeController.revision.value}',
           ),
-          child: switch (t) {
-            DockTab.home => shared[0],
-            DockTab.search => shared[1],
-            DockTab.myList => shared[2],
-            DockTab.profile => const ViewerProfileHomeScreen(),
-            // Both normally get pushed with a back button; as tabs they own the
-            // whole screen, so their own back affordance is suppressed.
-            DockTab.downloads => const DownloadsScreen(showBack: false),
-            DockTab.history => const HistoryScreen(showBack: false),
-            DockTab.sources => const BrowseSourcesScreen(),
-          },
+          child: !_visitedTabs.contains(t)
+              ? const SizedBox.shrink()
+              : switch (t) {
+                  DockTab.home =>
+                    deferInactiveTabs ? _deferredHomePage : _homePage,
+                  DockTab.search => _searchPage,
+                  DockTab.myList => const MyListScreen(),
+                  DockTab.profile => _profilePage,
+                  // Both normally get pushed with a back button; as tabs they own the
+                  // whole screen, so their own back affordance is suppressed.
+                  DockTab.downloads => const DownloadsScreen(showBack: false),
+                  DockTab.history => const HistoryScreen(showBack: false),
+                  DockTab.sources => const BrowseSourcesScreen(),
+                },
         ),
     ];
   }
@@ -394,8 +437,10 @@ class _RootShellState extends State<RootShell>
             ),
             child: Builder(
               builder: (context) {
+                final deferInactiveTabs =
+                    _deferTabsForPicker ||
+                    ProfileShellScope.shouldDeferTabs(context);
                 final visible = _visibleTabs();
-                final active = visible.indexOf(_tab);
                 return AnimatedBuilder(
                   animation: _switch,
                   builder: (context, child) {
@@ -412,17 +457,21 @@ class _RootShellState extends State<RootShell>
                   // RepaintBoundary → the page is a single cached layer the transition
                   // just composites (opacity + translate), so no repaint per frame.
                   child: RepaintBoundary(
-                    child: ValueListenableBuilder<int>(
-                      valueListenable: ThemeController.revision,
-                      builder: (context, _, _) => IndexedStack(
+                    child: ListenableBuilder(
+                      listenable: Listenable.merge([
+                        _selectedTab,
+                        ThemeController.revision,
+                      ]),
+                      builder: (context, _) => IndexedStack(
                         // indexOf can be -1 for one frame if the mode flipped before
                         // the listener ran; clamp rather than throw.
-                        index: active < 0 ? 0 : active,
+                        index: math.max(0, visible.indexOf(_tab)),
                         children: _pagesFor(
                           visible,
                           sl.isRegistered<ViewerProfileStore>()
                               ? sl<ViewerProfileStore>().dataProfileId
                               : 'default',
+                          deferInactiveTabs: deferInactiveTabs,
                         ),
                       ),
                     ),
@@ -433,6 +482,7 @@ class _RootShellState extends State<RootShell>
           ),
           bottomNavigationBar: ListenableBuilder(
             listenable: Listenable.merge([
+              _selectedTab,
               dockHiddenBySection,
               HomeCataloguePrefs.revision,
             ]),
@@ -482,8 +532,8 @@ class _RootShellState extends State<RootShell>
                     // Scaffold's bottomNavigationBar, and the shell sets
                     // extendBody. So every distinct value here relays out the
                     // Scaffold and rebuilds the body — and the body is an
-                    // IndexedStack, which builds EVERY tab, not just the one
-                    // on screen. Easing it smoothly meant ~14 rebuilds of
+                    // IndexedStack, which lays out all mounted tabs. Easing
+                    // it smoothly meant ~14 rebuilds of
                     // Home, My List and Sources for a dock animation, which
                     // measured 13-36ms of build per frame while raster sat
                     // at 3-5ms. It is why opening a Settings section stuttered
@@ -511,8 +561,7 @@ class _RootShellState extends State<RootShell>
                         ignoring: hide,
                         // Scoped to the dock subtree on purpose. The dock's
                         // HEIGHT never changes below, so the Scaffold keeps its
-                        // bottom inset and the body — an IndexedStack that
-                        // builds every tab — is never rebuilt by this.
+                        // bottom inset and the body is never rebuilt by this.
                         child: ValueListenableBuilder<bool>(
                           valueListenable: dockCollapsedByScroll,
                           builder: (context, collapsed, child) {
@@ -606,25 +655,23 @@ class _LiquidNavDock extends StatelessWidget {
           ? sl<ViewerProfileStore>().activeProfile
           : null;
       if (profile != null) {
-        // Hero landing spot for the profile-picker avatar flight — the old
-        // dock has the same tag, so the flight works on both navbars. Only
-        // one of icon/activeIcon is ever mounted, so the tag stays unique.
-        return Hero(
-          tag: viewerProfileHeroTag(profile.id),
-          child: ClipOval(
-            child: ProfileAvatarFace(
+        final avatar = ClipOval(
+          child: ProfileAvatarFace(
+            profile: profile,
+            photoUrl: profilePhotoForFace(
               profile: profile,
-              photoUrl: profilePhotoForFace(
-                profile: profile,
-                accountPhotoUrl: sl.isRegistered<AuthCubit>()
-                    ? sl<AuthCubit>().state.avatarUrl
-                    : null,
-              ),
-              iconSize: 18,
-              photoDiameter: 26,
+              accountPhotoUrl: sl.isRegistered<AuthCubit>()
+                  ? sl<AuthCubit>().state.avatarUrl
+                  : null,
             ),
+            iconSize: 18,
+            photoDiameter: 26,
           ),
         );
+        // The glass indicator renders a second, selected copy of nearby tabs.
+        return selected
+            ? avatar
+            : Hero(tag: viewerProfileHeroTag(profile.id), child: avatar);
       }
       return Icon(Icons.person_outline_rounded, color: color);
     }
@@ -943,8 +990,7 @@ class _FloatingDock extends StatelessWidget {
 
     // The SLOT stays the size of the open dock, always. The pill shrinks
     // inside it and hangs from the bottom, so the Scaffold's bottom inset
-    // never moves — and the body, an IndexedStack that builds every tab, is
-    // never relaid out while you scroll.
+    // never moves and the body is never relaid out while you scroll.
     //
     // Taken through the text scaler, not from a constant: at a larger system
     // font the label is taller, and a slot that assumed 10px would clip the

@@ -3214,6 +3214,18 @@ abstract class AppLocalizations {
   /// **'Sort by'**
   String get sortBy;
 
+  /// No description provided for @newEpisodeBadges.
+  ///
+  /// In en, this message translates to:
+  /// **'New episode badges'**
+  String get newEpisodeBadges;
+
+  /// No description provided for @comingSoonShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Soon'**
+  String get comingSoonShort;
+
   /// No description provided for @newCategory.
   ///
   /// In en, this message translates to:
@@ -3622,6 +3634,12 @@ abstract class AppLocalizations {
   /// **'Picture-in-picture'**
   String get pictureInPicture;
 
+  /// No description provided for @switchPlayer.
+  ///
+  /// In en, this message translates to:
+  /// **'Switch Player'**
+  String get switchPlayer;
+
   /// No description provided for @cast.
   ///
   /// In en, this message translates to:
@@ -3787,7 +3805,7 @@ abstract class AppLocalizations {
   /// No description provided for @androidPlayer.
   ///
   /// In en, this message translates to:
-  /// **'Android Player (Experimental)'**
+  /// **'Android Player'**
   String get androidPlayer;
 
   /// No description provided for @androidPlayerUnavailable.
@@ -4065,6 +4083,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No episodes available from this source'**
   String get noEpisodesAvailableFromThisSource;
+
+  /// No description provided for @episodesNotYetAired.
+  ///
+  /// In en, this message translates to:
+  /// **'Episodes not yet aired — check back later'**
+  String get episodesNotYetAired;
 
   /// No description provided for @noEpisodesMatchYourSearch.
   ///
@@ -5506,6 +5530,12 @@ abstract class AppLocalizations {
   /// **'Built-in player'**
   String get builtInPlayer;
 
+  /// No description provided for @mpvPlayer.
+  ///
+  /// In en, this message translates to:
+  /// **'mpv'**
+  String get mpvPlayer;
+
   /// No description provided for @otherApps.
   ///
   /// In en, this message translates to:
@@ -5583,6 +5613,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Custom lists'**
   String get customLists;
+
+  /// No description provided for @addToSeries.
+  ///
+  /// In en, this message translates to:
+  /// **'Add to series'**
+  String get addToSeries;
+
+  /// No description provided for @noSeries.
+  ///
+  /// In en, this message translates to:
+  /// **'No series'**
+  String get noSeries;
+
+  /// No description provided for @newSeries.
+  ///
+  /// In en, this message translates to:
+  /// **'New series'**
+  String get newSeries;
+
+  /// No description provided for @deleteSeries.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete series'**
+  String get deleteSeries;
+
+  /// No description provided for @deleteSeriesConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this series? Your titles stay on My List.'**
+  String get deleteSeriesConfirm;
 
   /// No description provided for @notInAny.
   ///
@@ -7015,7 +7075,7 @@ abstract class AppLocalizations {
   /// No description provided for @styledSubtitlesLibassSubtitlePlayback.
   ///
   /// In en, this message translates to:
-  /// **'Real .ass styling — fonts, positions, karaoke, signs. Best for anime. Applies from the next episode.'**
+  /// **'Real .ass styling — fonts, positions, karaoke, signs. Only mpv renders it fully; the Android player uses your style settings instead.'**
   String get styledSubtitlesLibassSubtitlePlayback;
 
   /// No description provided for @subtitleStyleSubtitle.
@@ -9975,6 +10035,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Experimental · Retry failed playback'**
   String get autoPlayerFallbackDescription;
+
+  /// No description provided for @ambientPlayer.
+  ///
+  /// In en, this message translates to:
+  /// **'Ambient player screen'**
+  String get ambientPlayer;
+
+  /// No description provided for @ambientPlayerDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Tinted glow behind the portrait player, matched to the video'**
+  String get ambientPlayerDescription;
+
+  /// No description provided for @portraitVideoEdgeToEdge.
+  ///
+  /// In en, this message translates to:
+  /// **'Edge-to-edge portrait video'**
+  String get portraitVideoEdgeToEdge;
 }
 
 class _AppLocalizationsDelegate

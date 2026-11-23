@@ -791,6 +791,59 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
   }
 
+  testWidgets('phone dock mounts tabs on first visit and keeps them alive', (
+    tester,
+  ) async {
+    sl.registerSingleton<AppMode>(const AppMode(isTv: false));
+    await tester.pumpWidget(
+      wrap(
+        const ProfileShellScope(
+          deferContent: false,
+          deferTabs: true,
+          child: RootShell(),
+        ),
+      ),
+    );
+    await pumpHomeAnimations(tester);
+    final profile = find.byType(ViewerProfileHomeScreen, skipOffstage: false);
+    expect(profile, findsNothing);
+
+    await tester.pumpWidget(
+      wrap(const ProfileShellScope(deferContent: false, child: RootShell())),
+    );
+    await pumpHomeAnimations(tester);
+    expect(profile, findsNothing);
+
+    await tester.tap(dockLabel('Profile'));
+    await pumpHomeAnimations(tester);
+    final profileElement = tester.element(profile);
+
+    await tester.tap(dockLabel('Home'));
+    await pumpHomeAnimations(tester);
+    expect(tester.element(profile), same(profileElement));
+  });
+
+  testWidgets('switching tabs reuses the mounted Home and Profile widgets', (
+    tester,
+  ) async {
+    sl.registerSingleton<AppMode>(const AppMode(isTv: false));
+    await tester.pumpWidget(wrap(const RootShell()));
+    await pumpHomeAnimations(tester);
+    final home = find.byType(HomeScreen, skipOffstage: false);
+    final profile = find.byType(ViewerProfileHomeScreen, skipOffstage: false);
+    final homeWidget = tester.widget(home);
+
+    await tester.tap(dockLabel('Profile'));
+    await pumpHomeAnimations(tester);
+    expect(tester.widget(home), same(homeWidget));
+    final profileWidget = tester.widget(profile);
+
+    await tester.tap(dockLabel('Home'));
+    await pumpHomeAnimations(tester);
+    expect(tester.widget(home), same(homeWidget));
+    expect(tester.widget(profile), same(profileWidget));
+  });
+
   testWidgets('Search fits a short screen with the keyboard open', (
     tester,
   ) async {
@@ -864,18 +917,18 @@ void main() {
     expect(find.byTooltip('Schedule'), findsNothing);
   });
 
-  // The remaining mode/genre cards still fit narrow screens.
-  testWidgets('the card row survives a narrow phone', (tester) async {
-    tester.view.physicalSize = const Size(320 * 3, 640 * 3);
-    tester.view.devicePixelRatio = 3;
-    addTearDown(tester.view.reset);
-
+  testWidgets('Home has no content mode shortcut cards outside Z Mode', (
+    tester,
+  ) async {
     sl.registerSingleton<AppMode>(const AppMode(isTv: false));
-    await tester.pumpWidget(wrap(const RootShell()));
+    await tester.pumpWidget(wrap(const HomeScreen()));
     await pumpHomeAnimations(tester);
 
-    expect(find.byKey(const ValueKey('home_schedule_card')), findsNothing);
-    expect(tester.takeException(), isNull);
+    for (final mode in ContentMode.values.where(
+      (m) => m != contentMode.state,
+    )) {
+      expect(find.text(mode.label), findsNothing);
+    }
   });
 
   // The row above only ever holds one card, because no MetadataRepository is
