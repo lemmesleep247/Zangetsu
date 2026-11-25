@@ -1,6 +1,8 @@
 package com.spyou.watch_app
 
 import android.app.Activity
+import android.animation.ValueAnimator
+import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
@@ -17,7 +19,9 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewStub
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.FrameLayout
@@ -65,7 +69,11 @@ import java.util.Locale
 class PhonePlayerActivity : Activity() {
 
     companion object {
+        /** Resting top margin of the content-warnings card (controls hidden). */
+        private const val GUIDE_TOP_DP = 24
+
         private const val TAG = "PhonePlayer"
+        private const val REQUEST_SUBTITLE_FILE = 7311
         private const val ROTATION_PULL_DISTANCE_DP = 64
 
         internal fun megaSkipTarget(position: Long, duration: Long, seconds: Int): Long? {
@@ -89,6 +97,37 @@ class PhonePlayerActivity : Activity() {
     private lateinit var loadingTitle: android.widget.TextView
     private lateinit var loadingEpisode: android.widget.TextView
     private lateinit var loadingStatus: android.widget.TextView
+    private var loadingSpeed: android.widget.TextView? = null
+
+    // Live download speed on the startup loader: the app's own received-bytes
+    // counter, sampled once a second. (ExoPlayer's per-request samples were
+    // tiny and bursty — 11 KB/s next to 5 MB/s — so they made a poor monitor.)
+    private var lastRxBytes = -1L
+    private var lastRxAt = 0L
+    private val speedTick = object : Runnable {
+        override fun run() {
+            val view = loadingSpeed
+            if (view != null && loadingOverlay.visibility == View.VISIBLE) {
+                val rx = android.net.TrafficStats.getUidRxBytes(android.os.Process.myUid())
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (rx != android.net.TrafficStats.UNSUPPORTED.toLong() && lastRxBytes >= 0 && now > lastRxAt) {
+                    val perSec = (rx - lastRxBytes) * 1000.0 / (now - lastRxAt)
+                    if (perSec >= 1024) {
+                        view.text = if (perSec >= 1024 * 1024) "%.1f MB/s".format(perSec / (1024 * 1024))
+                        else "${(perSec / 1024).toInt()} KB/s"
+                        view.visibility = View.VISIBLE
+                    } else {
+                        view.visibility = View.GONE
+                    }
+                }
+                lastRxBytes = rx
+                lastRxAt = now
+            } else {
+                lastRxBytes = -1L
+            }
+            handler.postDelayed(this, 1000)
+        }
+    }
     private lateinit var loadingActions: View
     private lateinit var loadingTitlePulse: PlaybackTitlePulse
 
@@ -127,6 +166,10 @@ class PhonePlayerActivity : Activity() {
     private var singleFingerRotation = false
     private var rotationDownX = 0f
     private var rotationDownY = 0f
+    // Smoothed downward speed (px/s) of the single finger, for flick-to-minimize.
+    private var pullLastY = 0f
+    private var pullLastTime = 0L
+    private var pullVelocity = 0f
     private var speedBeforeHold: PlaybackParameters? = null
     private var downX = 0f
     private var downY = 0f
@@ -169,6 +212,7 @@ class PhonePlayerActivity : Activity() {
     private lateinit var dblRight: TextView
 
     private var lastPresenceAt = 0L
+    private var lastProgressAt = 0L
     private val ticker = object : Runnable {
         override fun run() {
             syncProgress()
@@ -178,6 +222,12 @@ class PhonePlayerActivity : Activity() {
             if (now - lastPresenceAt >= 10_000L) {
                 lastPresenceAt = now
                 if (player?.isPlaying == true) sendDiscordPresence()
+            }
+            // Keeps Continue Watching and the finish-line check moving during
+            // playback, so a killed app loses seconds, not the whole episode.
+            if (now - lastProgressAt >= 5_000L) {
+                lastProgressAt = now
+                if (player?.isPlaying == true) sendProgress(periodic = true)
             }
             if (!scrubbing && ::seekPreview.isInitialized) {
                 player?.let { seekPreview.warm(it.currentPosition, it.duration) }
@@ -189,6 +239,9 @@ class PhonePlayerActivity : Activity() {
     private data class SkipSegment(val start: Long, val end: Long, val label: Int, val auto: Boolean)
 
     private lateinit var segmentButton: FrameLayout
+    private lateinit var parentalGuide: ParentalGuideOverlay
+    private var guideShownFor = -1
+    private var guideShift: android.animation.ObjectAnimator? = null
     private lateinit var segmentLabel: TextView
     private lateinit var segmentFill: TextView
     private var segmentProgress = 0
@@ -256,17 +309,86 @@ class PhonePlayerActivity : Activity() {
     private fun canMinimize() =
         inAppMiniPlayerEnabled && !docked && player?.currentMediaItem != null && !isInPictureInPictureMode
 
-    private fun minimizeToApp(): Boolean {
+    private fun minimizeToApp(morphed: Boolean = false): Boolean {
         if (!canMinimize()) return false
+        val host = PhonePlayerBridge.dockHost()?.takeUnless { it.isFinishing || it.isDestroyed }
+            ?: return false
+        // Android can put a player restored from PiP in a separate task.
+        val hostTask = if (host.taskId != taskId) {
+            @Suppress("DEPRECATION")
+            getSystemService(ActivityManager::class.java)?.appTasks
+                ?.firstOrNull { it.taskInfo.id == host.taskId } ?: return false
+        } else {
+            null
+        }
         docked = true
         pip.autoEnter = false
         updateDockPip()
         PhonePlayerBridge.channel?.invokeMethod(
             "playerDocked",
-            mapOf("sessionId" to sessionId, "playing" to (player?.isPlaying == true)),
+            mapOf(
+                "sessionId" to sessionId,
+                "playing" to (player?.isPlaying == true),
+                // The card already sits in the dock's spot: no entrance replay.
+                "morphed" to morphed,
+            ),
         )
-        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+        val bringHostToFront = Runnable {
+            if (hostTask != null) {
+                hostTask.moveToFront()
+            } else {
+                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+            }
+            // The card is already where the mini player sits; no cross-fade.
+            @Suppress("DEPRECATION")
+            if (morphed) overridePendingTransition(0, 0)
+        }
+        if (morphed) {
+            // Leaving now would blank the card until Flutter's mini player has
+            // its first frame. Keep the card up, frozen on its last frame, and
+            // swap once the app says its mini player is on screen.
+            freezeVideoFrame()
+            pendingHostFront = bringHostToFront
+            handler.postDelayed(handoffRunnable, 1500)
+        } else {
+            bringHostToFront.run()
+        }
         return true
+    }
+
+    private var pendingHostFront: Runnable? = null
+    private val handoffRunnable = Runnable { completeDockHandoff() }
+    private var dockFreeze: android.widget.ImageView? = null
+
+    /** Called when the app's mini player is visible (or after a short timeout). */
+    private fun cancelDockHandoff() {
+        handler.removeCallbacks(handoffRunnable)
+        pendingHostFront = null
+    }
+
+    internal fun completeDockHandoff() {
+        handler.removeCallbacks(handoffRunnable)
+        val front = pendingHostFront ?: return
+        pendingHostFront = null
+        if (!isFinishing && docked) front.run()
+    }
+
+    /** The player's video moves to the app's mini player, so the card keeps a still
+     * of the current frame until it leaves. */
+    private fun freezeVideoFrame() {
+        val surface = playerView.videoSurfaceView as? android.view.TextureView ?: return
+        if (surface.width <= 0 || surface.height <= 0) return
+        val bitmap = runCatching { surface.getBitmap(surface.width / 2, surface.height / 2) }.getOrNull()
+            ?: return
+        val still = android.widget.ImageView(this).apply {
+            setImageBitmap(bitmap)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        }
+        playerView.overlayFrameLayout?.addView(
+            still,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
+        )
+        dockFreeze = still
     }
 
     private fun updateDockPip() {
@@ -278,6 +400,16 @@ class PhonePlayerActivity : Activity() {
         )
     }
 
+    private var pausedFromPip = false
+
+    internal fun reopenPausedPip() {
+        if (!pausedFromPip || isFinishing || isDestroyed || isInPictureInPictureMode) return
+        pausedFromPip = false
+        startActivity(Intent(this, PhonePlayerActivity::class.java).addFlags(
+            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NO_USER_ACTION,
+        ))
+    }
+
     internal fun pauseDock() {
         if (docked) player?.pause()
     }
@@ -285,6 +417,10 @@ class PhonePlayerActivity : Activity() {
     internal fun onDockPipControl(control: String) {
         val activePlayer = player ?: return
         when (control) {
+            PipController.DISMISSED -> {
+                activePlayer.pause()
+                sendProgress()
+            }
             PipController.PLAY_PAUSE -> togglePlay()
             PipController.REWIND -> activePlayer.seekTo((activePlayer.currentPosition - 10_000L).coerceAtLeast(0L))
             PipController.FORWARD -> activePlayer.seekTo(activePlayer.currentPosition + 10_000L)
@@ -309,14 +445,20 @@ class PhonePlayerActivity : Activity() {
         if (!docked || isFinishing) return false
         when (command) {
             "toggleDockPlayback" -> togglePlay()
-            "closeDock" -> finish()
+            "closeDock" -> { cancelDockHandoff(); finish() }
             "restoreDock" -> {
                 // Reordering also counts as leaving MainActivity on some devices.
                 restoringDock = true
+                cancelDockHandoff()
                 PhonePlayerBridge.dockHost()?.clearPhoneDockPip(restoring = true)
+                // Come back sitting in the mini player's spot, then open out.
+                val morphIn = canMorph()
+                if (morphIn) applyMinimize(1f)
                 startActivity(Intent(this, PhonePlayerActivity::class.java).addFlags(
                     Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NO_USER_ACTION,
                 ))
+                @Suppress("DEPRECATION")
+                if (morphIn) overridePendingTransition(0, 0)
             }
             else -> return false
         }
@@ -338,7 +480,8 @@ class PhonePlayerActivity : Activity() {
     private var subtitlePosition = 95
     private var subtitleBackground = android.graphics.Color.TRANSPARENT
     private var subtitleForeground = android.graphics.Color.WHITE
-    private var subtitleEdgeType = CaptionStyleCompat.EDGE_TYPE_OUTLINE
+    private var subtitleOutlineType = "soft"
+    private var subtitleOutlineWidth = 2f
     private var subtitleEdgeColor = android.graphics.Color.BLACK
     private var subtitleFontPath: String? = null
     private var subtitleTypeface: android.graphics.Typeface? = null
@@ -451,6 +594,13 @@ class PhonePlayerActivity : Activity() {
             }
         }
         val stage = findViewById<FrameLayout>(R.id.player_root)
+        parentalGuide = ParentalGuideOverlay(this)
+        stage.addView(parentalGuide, stage.indexOfChild(findViewById<View>(R.id.loading)), FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        })
+        applyGuideMargins()
         stage.addView(segmentButton, stage.indexOfChild(findViewById<View>(R.id.loading)), FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.END,
@@ -463,7 +613,11 @@ class PhonePlayerActivity : Activity() {
         loadingBackdrop = findViewById(R.id.loading_backdrop)
         loadingTitle = findViewById(R.id.loading_title)
         loadingEpisode = findViewById(R.id.loading_episode)
+        // The loader carries only the logo / show name + status; the episode line
+        // ("Episode 1 · S1 · E1") stays off it. Text is still set, just never shown.
+        loadingEpisode.visibility = View.GONE
         loadingStatus = findViewById(R.id.loading_status)
+        loadingSpeed = findViewById(R.id.loading_speed)
         loadingActions = findViewById(R.id.loading_actions)
         findViewById<View>(R.id.btn_loading_retry).setOnClickListener {
             switching = false
@@ -495,6 +649,11 @@ class PhonePlayerActivity : Activity() {
         btnPlay = findViewById(R.id.btn_play)
         seek = findViewById(R.id.seek)
         timeText = findViewById(R.id.time_chip)
+        timeText.setOnClickListener {
+            showRemaining = !showRemaining
+            player?.let { p -> if (p.duration > 0) timeText.text = timeLabel(p.currentPosition, p.duration) }
+            bumpControls()
+        }
         titleText = findViewById(R.id.title)
         episodeText = findViewById(R.id.episode_label)
         isMovie = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_IS_MOVIE, false)
@@ -517,7 +676,8 @@ class PhonePlayerActivity : Activity() {
             PhonePlayerIntent.EXTRA_SUB_BG_COLOR, android.graphics.Color.TRANSPARENT,
         )
         subtitleForeground = intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_FG, android.graphics.Color.WHITE)
-        subtitleEdgeType = intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_EDGE_TYPE, CaptionStyleCompat.EDGE_TYPE_OUTLINE)
+        subtitleOutlineType = intent.getStringExtra(PhonePlayerIntent.EXTRA_SUB_OUTLINE_TYPE) ?: "soft"
+        subtitleOutlineWidth = intent.getFloatExtra(PhonePlayerIntent.EXTRA_SUB_OUTLINE_WIDTH, 2f)
         subtitleEdgeColor = intent.getIntExtra(PhonePlayerIntent.EXTRA_SUB_EDGE_COLOR, android.graphics.Color.BLACK)
         updateSubtitleFont(intent.getStringExtra(PhonePlayerIntent.EXTRA_SUB_FONT))
 
@@ -525,7 +685,8 @@ class PhonePlayerActivity : Activity() {
         updateOrientationLayout()
 
         findViewById<View>(R.id.btn_back).setOnClickListener {
-            if (!showWatchPage() && !minimizeToApp()) finish()
+            if (pendingHostFront != null) return@setOnClickListener
+            if (!showWatchPage() && !minimizeWithMorph()) finish()
         }
         btnPlay.setOnClickListener { togglePlay() }
         findViewById<View>(R.id.btn_previous).setOnClickListener {
@@ -556,7 +717,7 @@ class PhonePlayerActivity : Activity() {
                 val d = player?.duration ?: 0L
                 if (d > 0) {
                     val pos = d * value / 1000
-                    timeText.text = if (isPortraitCard()) fmt(pos).padStart(5, '0') + " / " + fmt(d).padStart(5, '0') else fmt(pos) + " / " + fmt(d)
+                    timeText.text = timeLabel(pos, d)
                     sb.contentDescription = getString(R.string.phone_player_desc_seek) + ", " + fmt(pos) + " of " + fmt(d)
                     if (scrubbing) seekPreview.show(pos, fmt(pos))
                 }
@@ -651,9 +812,12 @@ class PhonePlayerActivity : Activity() {
             )
             .build()
         player = exo
+        handler.postDelayed(speedTick, 1000)
         playerView.player = exo
         playerView.subtitleView?.apply {
-            setApplyEmbeddedStyles(false)
+            // Styles stay on so the outline spans survive; our cues carry only
+            // plain text plus those spans, so nothing from the file leaks in.
+            setApplyEmbeddedStyles(true)
             setApplyEmbeddedFontSizes(false)
         }
         applySubtitleStyle()
@@ -673,6 +837,7 @@ class PhonePlayerActivity : Activity() {
                     ),
                 )
                 hideLoading()
+                showParentalGuide()
             }
 
             // Force cues onto the user's vertical Position (0=top … 100=bottom).
@@ -683,6 +848,10 @@ class PhonePlayerActivity : Activity() {
             }
 
             override fun onPlaybackStateChanged(state: Int) {
+                // Natural end: report it so the episode counts as watched even
+                // when the stream never told us its length.
+                if (state == Player.STATE_ENDED) sendProgress()
+                syncPlayIcon()
                 sendDiscordPresence()
                 updateKeepScreenOn()
                 setBuffering(
@@ -702,6 +871,7 @@ class PhonePlayerActivity : Activity() {
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                syncPlayIcon()
                 sendDiscordPresence()
             }
 
@@ -805,6 +975,7 @@ class PhonePlayerActivity : Activity() {
         handler.removeCallbacks(resolveTimeout)
         handler.removeCallbacks(startTimeout)
         loadingOverlay.visibility = View.GONE
+        loadingSpeed?.visibility = View.GONE
         loadingTitlePulse.stopPulse()
         setBuffering(false)
         everPlayed = true
@@ -1177,7 +1348,8 @@ class PhonePlayerActivity : Activity() {
             }
             if (edgeToEdge) video.setBackgroundColor(android.graphics.Color.BLACK)
             else video.background = getDrawable(R.drawable.phone_player_video_card)
-            video.clipToOutline = !edgeToEdge
+            cardRadiusPx = if (edgeToEdge) 0f else dp(18).toFloat()
+            restoreCardClip(video)
             val info = ensureWatchInfo()
             info?.visibility = View.VISIBLE
             if (ambientEnabled) startAmbient()
@@ -1190,7 +1362,8 @@ class PhonePlayerActivity : Activity() {
             }
             video.layoutParams = lp
             video.background = null
-            video.clipToOutline = false
+            cardRadiusPx = 0f
+            restoreCardClip(video)
             watchInfo?.visibility = View.GONE
             stopAmbient()
         }
@@ -1342,7 +1515,11 @@ class PhonePlayerActivity : Activity() {
         bottomBar.layoutParams = bottomBarParams
         if (mini) {
             timeText.setTextColor(android.graphics.Color.WHITE)
-            timeText.text = fmt(player?.currentPosition ?: 0L).padStart(5, '0') + " / " + fmt((player?.duration ?: 0L).coerceAtLeast(0L)).padStart(5, '0')
+            timeText.text = timeLabel(player?.currentPosition ?: 0L, (player?.duration ?: 0L).coerceAtLeast(0L))
+        }
+        if (::parentalGuide.isInitialized) {
+            applyGuideMargins()
+            syncGuidePlacement(animate = false)
         }
     }
 
@@ -1708,6 +1885,7 @@ class PhonePlayerActivity : Activity() {
         p.pause()
         if (loadedEpisodeIndex != currentIndex) autoSkipped.clear()
         skipsRequested = false
+        parentalGuide.hideNow()
         skipSegments = emptyList()
         updateSegmentButton(null)
         playbackStarted = false
@@ -2127,9 +2305,9 @@ class PhonePlayerActivity : Activity() {
         }
     }
 
-    private fun languageMatches(language: String?): Boolean {
+    private fun languageMatches(language: String?, preference: String = subtitlePreference): Boolean {
         val candidate = language?.replace('_', '-')?.lowercase() ?: return false
-        val wanted = subtitlePreference.replace('_', '-').lowercase()
+        val wanted = preference.replace('_', '-').lowercase()
         if (candidate == wanted || candidate.startsWith("$wanted-")) return true
         val wantedName = Locale.forLanguageTag(wanted)
             .getDisplayLanguage(Locale.getDefault())
@@ -2224,8 +2402,13 @@ class PhonePlayerActivity : Activity() {
     }
 
     private fun renderSubtitleCues(cues: List<Cue>) {
+        val positioned = SubtitleCuePositioning.position(cues, subtitlePosition, 0.0533f * subtitleScale)
         playerView.subtitleView?.setCues(
-            SubtitleCuePositioning.position(cues, subtitlePosition, 0.0533f * subtitleScale),
+            SubtitleOutline.apply(
+                positioned,
+                SubtitleOutline.look(subtitleOutlineType, subtitleOutlineWidth),
+                subtitleEdgeColor,
+            ),
         )
     }
 
@@ -2235,7 +2418,8 @@ class PhonePlayerActivity : Activity() {
                 subtitleForeground,
                 subtitleBackground,
                 android.graphics.Color.TRANSPARENT,
-                subtitleEdgeType,
+                // The outline is drawn per word by SubtitleOutline instead.
+                CaptionStyleCompat.EDGE_TYPE_NONE,
                 subtitleEdgeColor,
                 subtitleTypeface,
             ))
@@ -2254,13 +2438,14 @@ class PhonePlayerActivity : Activity() {
 
     internal fun updateSubtitleStyle(
         scale: Float, position: Int, foreground: Int, background: Int,
-        edgeType: Int, edgeColor: Int, fontPath: String?,
+        outlineType: String, outlineWidth: Float, edgeColor: Int, fontPath: String?,
     ) {
         subtitleScale = scale.coerceIn(0.25f, 5f)
         subtitlePosition = position.coerceIn(0, 100)
         subtitleForeground = foreground
         subtitleBackground = background
-        subtitleEdgeType = edgeType
+        subtitleOutlineType = outlineType
+        subtitleOutlineWidth = outlineWidth
         subtitleEdgeColor = edgeColor
         updateSubtitleFont(fontPath)
         applySubtitleStyle()
@@ -2268,96 +2453,207 @@ class PhonePlayerActivity : Activity() {
 
     private fun showSubtitleStyle() {
         if (subtitleStyleDialog?.isShowing != true) {
-            subtitleStyleDialog = PhonePlayerBridge.openSubtitleStyle(this)
+            subtitleStyleDialog = PhonePlayerBridge.openFlutterSheet(this, "openSubtitleStyle")
         }
+    }
+
+    /** "Arabic" for "ar"; the raw code only when the phone has no name for it. */
+    private fun languageName(code: String?): String? {
+        if (code.isNullOrBlank() || code == "und") return null
+        val name = Locale.forLanguageTag(code.replace('_', '-')).getDisplayLanguage(Locale.getDefault())
+        return name.takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }?.replaceFirstChar { it.titlecase() } ?: code
+    }
+
+    private fun trackLabel(f: androidx.media3.common.Format, fallback: String): String =
+        f.label?.takeIf { it.isNotBlank() } ?: languageName(f.language) ?: fallback
+
+    /** "5.1 · EAC3" the way the MPV sheet shows an audio track's detail. */
+    private fun audioDetail(f: androidx.media3.common.Format): String? {
+        val channels = when (f.channelCount) {
+            androidx.media3.common.Format.NO_VALUE, 0 -> null
+            1 -> "Mono"
+            2 -> "Stereo"
+            6 -> "5.1"
+            8 -> "7.1"
+            else -> "${f.channelCount} ch"
+        }
+        val codec = f.sampleMimeType?.substringAfterLast('/')?.removePrefix("vnd.")
+            ?.substringBefore('.')?.uppercase()?.takeIf { it.isNotBlank() }
+        return listOfNotNull(channels, codec).joinToString(" · ").ifEmpty { null }
+    }
+
+    private fun preferredLanguageLabel(): String {
+        val name = when (subtitlePreference) {
+            "" -> "Auto"
+            "off" -> "Off"
+            else -> languageName(subtitlePreference) ?: subtitlePreference.uppercase()
+        }
+        return "Preferred language: $name"
     }
 
     private fun showTracksMenu() {
         val p = player ?: return
         handler.removeCallbacks(hideRunnable)
         val tracks = p.currentTracks
-        val audio = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-        val text = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-        val audioTracks = audio.flatMap { g -> (0 until g.length).map { g to it } }
-        val textTracks = text.flatMap { g -> (0 until g.length).map { g to it } }
-        val labels = mutableListOf<String>()
-        val versionFor = mutableListOf<String?>()
-        // Live Sub/Dub switch, routed back through Dart's catalogue
-        // resolution (same episode, position retained). Only when the title
-        // actually offers more than one version.
+        val audioTracks = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+            .flatMap { g -> (0 until g.length).map { g to it } }
+        val textTracks = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+            .flatMap { g -> (0 until g.length).map { g to it } }
+        val audioRows = mutableListOf<PhonePlayerSheet.SheetRow>()
+        val subtitleRows = mutableListOf<PhonePlayerSheet.SheetRow>()
+
+        // Sub / Dub: the same title in another version, routed back through
+        // Dart's catalogue resolution (same episode, position kept).
         if (categories.size > 1) {
             for (cat in categories) {
                 val name = when (cat.lowercase()) {
                     "dub" -> getString(R.string.phone_player_version_dub)
                     else -> getString(R.string.phone_player_version_sub)
                 }
-                val mark = if (cat == currentCategory) " ✓" else ""
-                labels += "Version: $name$mark"
-                versionFor += cat
+                audioRows += PhonePlayerSheet.SheetRow(name.uppercase(), selected = cat == currentCategory) {
+                    if (cat != currentCategory) switchCategory(cat) else bumpControls()
+                }
             }
         }
-        labels += "Audio: Auto"
-        versionFor += null
-        // audioPicks[0] ("Auto") sits at this label index; tracks follow.
-        val audioBase = labels.size - 1
-        val addonSubtitles = intent.getBooleanExtra(PhonePlayerIntent.EXTRA_STREMIO_SUBTITLES, false)
-        val audioPicks = mutableListOf<TrackSelectionOverride?>(null)
-        for ((g, i) in audioTracks) {
-            val f = g.getTrackFormat(i)
-            labels += "Audio: ${f.label ?: f.language ?: "Track ${labels.size}"}"
-            versionFor += null
-            audioPicks += TrackSelectionOverride(g.mediaTrackGroup, i)
-        }
-        val textBase = labels.size
-        labels += "Subtitles: Off"
-        versionFor += null
-        val textPicks = mutableListOf<TrackSelectionOverride?>(null)
-        for ((g, i) in textTracks) {
-            val f = g.getTrackFormat(i)
-            labels += "Subtitles: ${f.label ?: f.language ?: "Track ${labels.size}"}"
-            versionFor += null
-            textPicks += TrackSelectionOverride(g.mediaTrackGroup, i)
-        }
-        val addonRow = if (addonSubtitles) labels.size else -1
-        if (addonSubtitles) {
-            labels += "Addon subtitles…"
-            versionFor += null
-        }
-        val styleRow = labels.size
-        labels += getString(R.string.phone_player_subtitle_style)
-        versionFor += null
-        val selectedRows = mutableSetOf<Int>()
-        if (categories.size > 1) categories.indexOf(currentCategory).takeIf { it >= 0 }?.let { selectedRows += it }
-        val audioIndex = audioTracks.indexOfFirst { (group, index) ->
+        val audioOverride = audioTracks.indexOfFirst { (group, index) ->
             group.isTrackSelected(index) && p.trackSelectionParameters.overrides.containsKey(group.mediaTrackGroup)
         }
-        selectedRows += audioBase + audioIndex + 1
-        val textIndex = if (p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) -1
-            else textTracks.indexOfFirst { (group, index) -> group.isTrackSelected(index) }
-        selectedRows += textBase + textIndex + 1
-        PhonePlayerSheet(this)
-            .setTitle(getString(R.string.phone_player_title_tracks))
-            .setTrackItems(labels.toTypedArray(), audioBase, textBase, selectedRows) { _, which ->
-                if (which == styleRow) {
-                    showSubtitleStyle()
-                    return@setTrackItems
-                }
-                if (which == addonRow) {
-                    showAddonSubtitles()
-                    return@setTrackItems
-                }
-                val version = versionFor[which]
-                if (version != null) {
-                    if (version != currentCategory) switchCategory(version)
-                    else bumpControls()
-                } else if (which < textBase) {
-                    selectAudioTrack(audioPicks[which - audioBase])
-                } else {
-                    selectTextTrack(textPicks[which - textBase])
-                }
+        audioRows += PhonePlayerSheet.SheetRow("Auto", selected = audioOverride < 0) { selectAudioTrack(null) }
+        audioTracks.forEachIndexed { i, (g, idx) ->
+            val f = g.getTrackFormat(idx)
+            audioRows += PhonePlayerSheet.SheetRow(
+                trackLabel(f, "Audio ${i + 1}"), detail = audioDetail(f), selected = audioOverride == i,
+            ) { selectAudioTrack(TrackSelectionOverride(g.mediaTrackGroup, idx)) }
+        }
+
+        val textOff = p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val textIndex = if (textOff) -1 else textTracks.indexOfFirst { (group, index) -> group.isTrackSelected(index) }
+        subtitleRows += PhonePlayerSheet.SheetRow(
+            preferredLanguageLabel(), icon = R.drawable.phone_player_tracks,
+        ) { requestSubtitleLanguage() }
+        subtitleRows += PhonePlayerSheet.SheetRow("Off", selected = textOff || textIndex < 0) { selectTextTrack(null) }
+        if (intent.getBooleanExtra(PhonePlayerIntent.EXTRA_STREMIO_SUBTITLES, false)) {
+            subtitleRows += PhonePlayerSheet.SheetRow("Addon subtitles…", icon = R.drawable.phone_player_sources) {
+                showAddonSubtitles()
             }
+        }
+        textTracks.forEachIndexed { i, (g, idx) ->
+            val f = g.getTrackFormat(idx)
+            subtitleRows += PhonePlayerSheet.SheetRow(trackLabel(f, "Track ${i + 1}"), selected = textIndex == i) {
+                selectTextTrack(TrackSelectionOverride(g.mediaTrackGroup, idx))
+            }
+        }
+
+        // Always in reach: pinned under the two lists, not buried in them.
+        val footer = listOf(
+            PhonePlayerSheet.SheetRow("Search online", icon = R.drawable.phone_player_search) {
+                if (subtitleStyleDialog?.isShowing != true) {
+                    subtitleStyleDialog = PhonePlayerBridge.openFlutterSheet(this, "openOnlineSubtitles")
+                }
+            },
+            PhonePlayerSheet.SheetRow("Load from file", icon = R.drawable.phone_player_file) { pickSubtitleFile() },
+            PhonePlayerSheet.SheetRow(getString(R.string.phone_player_subtitle_style), icon = R.drawable.phone_player_captions) {
+                showSubtitleStyle()
+            },
+        )
+        PhonePlayerSheet(this)
+            .setAudioSubtitleSheet(audioRows, subtitleRows, footer)
             .setOnDismissListener { bumpControls() }
             .showForPlayer()
+    }
+
+    /** The saved language pick, from the same Flutter picker the MPV sheet uses. */
+    private fun requestSubtitleLanguage() {
+        if (subtitleStyleDialog?.isShowing != true) {
+            subtitleStyleDialog = PhonePlayerBridge.openFlutterSheet(this, "openSubtitleLanguage")
+        }
+    }
+
+    /** Dart saved a new preferred subtitle language; apply it to this stream. */
+    internal fun updateSubtitlePreference(value: String) {
+        subtitlePreference = value
+        subtitlePreferenceApplied = false
+        if (value.isEmpty()) return
+        player?.currentTracks?.let(::applySubtitlePreference)
+    }
+
+    /**
+     * Adds [track] to what is playing and switches to it, keeping the position.
+     * The source is rebuilt because Media3 only reads subtitle files when the
+     * media item is prepared.
+     */
+    private fun attachSubtitle(track: MediaItem.SubtitleConfiguration) {
+        val p = player ?: return
+        val item = p.currentMediaItem ?: return
+        val factory = currentSourceFactory ?: return
+        val selected = track.buildUpon()
+            .setId(track.uri.toString())
+            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT).build()
+        val remaining = item.localConfiguration?.subtitleConfigurations.orEmpty()
+            .filter { it.uri != selected.uri }
+            .map { it.buildUpon().setSelectionFlags(0).build() }
+        val position = p.currentPosition
+        val playing = p.playWhenReady
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setPreferredTextLanguage(selected.language)
+            .build()
+        subtitlePreferenceApplied = true
+        pendingAddonSubtitleId = selected.id
+        val choice = selected.language
+        if (!choice.isNullOrEmpty()) {
+            PhonePlayerBridge.channel?.invokeMethod(
+                "rememberSubtitle",
+                mapOf("sessionId" to sessionId, "choice" to choice),
+            )
+        }
+        val updated = item.buildUpon().setSubtitleConfigurations(remaining + selected).build()
+        p.setMediaSource(factory.createMediaSource(updated), position)
+        p.prepare()
+        p.playWhenReady = playing
+    }
+
+    /** A subtitle file Dart downloaded (online search): attach it and show it. */
+    internal fun addLocalSubtitle(path: String, label: String, language: String?) {
+        val file = java.io.File(path)
+        if (!file.isFile) return
+        attachSubtitle(
+            MediaItem.SubtitleConfiguration.Builder(android.net.Uri.fromFile(file))
+                .setMimeType(subtitleMime("", file.name))
+                .setLanguage(language?.takeIf { it.isNotBlank() })
+                .setLabel(label)
+                .build(),
+        )
+    }
+
+    /** "Load from file": the system picker, then the chosen file plays as a track. */
+    private fun pickSubtitleFile() {
+        val open = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(open, REQUEST_SUBTITLE_FILE)
+        } catch (_: android.content.ActivityNotFoundException) {
+            toast("No file picker found on this phone")
+        }
+    }
+
+    @Deprecated("The Activity Result API needs a ComponentActivity; this screen is a plain Activity")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_SUBTITLE_FILE || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { if (it.moveToFirst()) it.getString(0) else null } ?: uri.lastPathSegment.orEmpty()
+        attachSubtitle(
+            MediaItem.SubtitleConfiguration.Builder(uri)
+                .setMimeType(subtitleMime("", name))
+                .setLabel(name.substringBeforeLast('.').ifBlank { "Subtitle" })
+                .build(),
+        )
     }
 
     private fun showAddonSubtitles() {
@@ -2386,35 +2682,7 @@ class PhonePlayerActivity : Activity() {
                     .setTitle(getString(R.string.phone_player_title_subtitles))
                     .setItems(tracks.map { it.label ?: it.language ?: "Subtitle" }.toTypedArray()) { _, which ->
                         if (!uiAlive() || generation != mediaGeneration || currentUrl != url) return@setItems
-                        val p = player ?: return@setItems
-                        val item = p.currentMediaItem ?: return@setItems
-                        val factory = currentSourceFactory ?: return@setItems
-                        val selected = tracks[which].buildUpon()
-                            .setId(tracks[which].uri.toString())
-                            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT).build()
-                        val remaining = item.localConfiguration?.subtitleConfigurations.orEmpty()
-                            .filter { it.uri != selected.uri }
-                            .map { it.buildUpon().setSelectionFlags(0).build() }
-                        val position = p.currentPosition
-                        val playing = p.playWhenReady
-                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                            .setPreferredTextLanguage(selected.language)
-                            .build()
-                        subtitlePreferenceApplied = true
-                        pendingAddonSubtitleId = selected.id
-                        val addonChoice = selected.language
-                        if (!addonChoice.isNullOrEmpty()) {
-                            PhonePlayerBridge.channel?.invokeMethod(
-                                "rememberSubtitle",
-                                mapOf("sessionId" to sessionId, "choice" to addonChoice),
-                            )
-                        }
-                        val updated = item.buildUpon().setSubtitleConfigurations(remaining + selected).build()
-                        p.setMediaSource(factory.createMediaSource(updated), position)
-                        p.prepare()
-                        p.playWhenReady = playing
+                        attachSubtitle(tracks[which])
                     }
                     .setOnDismissListener { bumpControls() }
                     .showForPlayer()
@@ -2603,7 +2871,7 @@ class PhonePlayerActivity : Activity() {
             add(R.string.phone_player_menu_pip, R.drawable.ic_pip_play) { pip.enter(null) }
         }
         if (canMinimize()) {
-            add(R.string.phone_player_menu_minimize, R.drawable.ic_pip_play) { minimizeToApp() }
+            add(R.string.phone_player_menu_minimize, R.drawable.ic_pip_play) { minimizeWithMorph() }
         }
         add(R.string.phone_player_menu_info, R.drawable.phone_player_info, "info") { showInfo() }
         val dialog = PhonePlayerSheet(this)
@@ -2696,22 +2964,34 @@ class PhonePlayerActivity : Activity() {
         )
     }
 
-    private fun sendProgress() {
+    /** [periodic] saves are frequent, so Dart keeps them off the cloud. */
+    private fun sendProgress(periodic: Boolean = false) {
         val p = player ?: return
-        if (!playbackStarted || p.duration <= 0) return
+        // Not gated on duration: some streams never report one, and resume
+        // still has to work for them.
+        if (!playbackStarted) return
         PhonePlayerBridge.channel?.invokeMethod(
             "saveProgress",
             mapOf(
                 "index" to loadedEpisodeIndex,
                 "positionMs" to p.currentPosition.coerceAtLeast(0L),
                 "durationMs" to p.duration.coerceAtLeast(0L),
+                "ended" to (p.playbackState == Player.STATE_ENDED),
+                "periodic" to periodic,
             ),
         )
     }
 
     private fun togglePlay() {
         val p = player ?: return
-        if (p.isPlaying) p.pause() else p.play()
+        when {
+            p.playbackState == Player.STATE_ENDED -> {
+                p.seekToDefaultPosition()
+                p.play()
+            }
+            p.playWhenReady -> p.pause()
+            else -> p.play()
+        }
         syncPlayIcon()
         bumpControls()
     }
@@ -2894,6 +3174,8 @@ class PhonePlayerActivity : Activity() {
         ev: MotionEvent,
         taps: android.view.GestureDetector,
     ) {
+        // The card is on its way into the app's mini player; leave it alone.
+        if (pendingHostFront != null) return
         val action = ev.actionMasked
         val holding = speedBeforeHold != null
         when (action) {
@@ -2903,20 +3185,29 @@ class PhonePlayerActivity : Activity() {
                 downY = ev.y
                 rotationDownX = ev.rawX
                 rotationDownY = ev.rawY
+                pullLastY = ev.rawY
+                pullLastTime = ev.eventTime
+                pullVelocity = 0f
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 singleFingerRotation = false
                 restoreSpeedAfterHold()
-                resetRotationPull()
+                if (minimizeP > 0f) settleMinimize(false) else resetRotationPull()
             }
             MotionEvent.ACTION_CANCEL -> {
                 restoreSpeedAfterHold()
-                resetRotationPull()
+                if (minimizeP > 0f) settleMinimize(false) else resetRotationPull()
             }
             MotionEvent.ACTION_UP -> restoreSpeedAfterHold()
         }
         val rotationY = ev.rawY - rotationDownY
         val rotationX = kotlin.math.abs(ev.rawX - rotationDownX)
+        if (action == MotionEvent.ACTION_MOVE && ev.eventTime > pullLastTime) {
+            val speed = (ev.rawY - pullLastY) * 1000f / (ev.eventTime - pullLastTime)
+            pullVelocity = pullVelocity * .5f + speed * .5f
+            pullLastY = ev.rawY
+            pullLastTime = ev.eventTime
+        }
         if (isPortraitCard() || (holding && action != MotionEvent.ACTION_POINTER_DOWN)) {
             taps.onTouchEvent(ev)
             val up = -rotationY
@@ -2924,17 +3215,28 @@ class PhonePlayerActivity : Activity() {
             val pullingDown = isPortraitCard() && singleFingerRotation && !holding &&
                 rotationY > rotationX && canMinimize()
             if (action == MotionEvent.ACTION_MOVE && !holding) {
-                if (pullingDown && rotationY >= dp(12)) updateRotationPull(v, rotationY, minimizing = true)
-                else if (pullingUp && up >= dp(12)) updateRotationPull(v, rotationY)
-                else resetRotationPull()
+                if (pullingDown && rotationY >= dp(12)) {
+                    // The whole page follows the finger toward the mini player.
+                    minimizeAnimator?.cancel()
+                    applyMinimize((rotationY / minimizeTravel()).coerceIn(0f, 1f))
+                } else {
+                    if (minimizeP > 0f) resetMinimize()
+                    if (pullingUp && up >= dp(12)) updateRotationPull(v, rotationY)
+                    else resetRotationPull()
+                }
             }
             if (action == MotionEvent.ACTION_UP && !holding) {
                 val fullscreen = pullingUp && up >= dp(ROTATION_PULL_DISTANCE_DP)
-                val minimize = pullingDown && rotationY >= dp(ROTATION_PULL_DISTANCE_DP)
-                resetRotationPull(animate = !fullscreen && !minimize)
+                val morphing = minimizeP > 0f
+                // Past a quarter of the way or flicked down finishes the move;
+                // flicking back up cancels even a long pull.
+                val flick = dp(800)
+                val commit = pullingDown && morphing &&
+                    (pullVelocity > flick || (pullVelocity > -flick && minimizeP >= .25f))
+                if (morphing) settleMinimize(commit) else resetRotationPull(animate = !fullscreen)
                 when {
                     fullscreen -> toggleRotation()
-                    minimize -> minimizeToApp()
+                    morphing -> Unit
                     else -> v.performClick()
                 }
             }
@@ -3027,15 +3329,11 @@ class PhonePlayerActivity : Activity() {
     private fun rotationMotionEnabled() = Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
         android.animation.ValueAnimator.areAnimatorsEnabled()
 
-    private fun updateRotationPull(video: View, distance: Float, minimizing: Boolean = false) {
+    private fun updateRotationPull(video: View, distance: Float) {
         val progress = (kotlin.math.abs(distance) * 100 / dp(ROTATION_PULL_DISTANCE_DP)).toInt().coerceAtMost(100)
         video.animate().cancel()
-        val motion = rotationMotionEnabled()
-        video.translationY = if (motion && !minimizing)
+        video.translationY = if (rotationMotionEnabled())
             (distance * .5f).coerceIn(-dp(36).toFloat(), dp(36).toFloat()) else 0f
-        rotationPullHint.translationY = if (motion && minimizing)
-            distance.coerceAtMost(dp(ROTATION_PULL_DISTANCE_DP).toFloat()) else 0f
-        rotationPullProgress.visibility = if (minimizing) View.GONE else View.VISIBLE
         rotationPullArrow.text = if (distance < 0) "↑" else "↓"
         rotationPullArrow.isSelected = progress == 100
         rotationPullProgress.isSelected = progress == 100
@@ -3054,6 +3352,194 @@ class PhonePlayerActivity : Activity() {
         } else {
             video.translationY = 0f
         }
+    }
+
+    // ── Drag the watch page into the mini player ─────────────────────────
+    // Same morph as the Flutter watch page: p is 0 (full page) → 1 (video in
+    // the mini player's spot). The video travels and shrinks, the info fades,
+    // and the page's black dissolves so the app behind shows through.
+
+    private var minimizeP = 0f
+    private var minimizeAnimator: ValueAnimator? = null
+    private var morphBackdrop: android.graphics.drawable.Drawable? = null
+    private var morphRadius = 0f
+
+    /** Corner radius the portrait card has at rest; the drag starts from it. */
+    private var cardRadiusPx = 0f
+    private var morphClipInstalled = false
+
+    /**
+     * The video's resting clip: rounded at [cardRadiusPx] on the portrait card,
+     * none otherwise. Set explicitly (not left to the background drawable) and
+     * put back after every drag, so the card keeps its corners at rest.
+     */
+    private fun restoreCardClip(video: View) {
+        morphClipInstalled = false
+        val radius = cardRadiusPx
+        if (radius > 0f) {
+            video.outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, radius)
+                }
+            }
+            video.clipToOutline = true
+        } else {
+            video.outlineProvider = ViewOutlineProvider.BACKGROUND
+            video.clipToOutline = false
+        }
+        video.invalidateOutline()
+    }
+
+    /** Mirrors defaultDockRect() in in_app_mini_player.dart. The mini player lives
+     * in the app's window, which can be shorter than the screen (it stops above
+     * the navigation bar), so its area is measured from that window. */
+    private fun dockRectPx(): android.graphics.RectF {
+        val decor = window.decorView
+        val d = resources.displayMetrics.density
+        val bars = androidx.core.view.ViewCompat.getRootWindowInsets(decor)
+            ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        val hostView = PhonePlayerBridge.dockHost()?.findViewById<View>(android.R.id.content)
+            ?.takeIf { it.width > 0 && it.height > 0 }
+        val origin = IntArray(2)
+        hostView?.getLocationOnScreen(origin)
+        val winW = hostView?.width ?: decor.width
+        val winH = hostView?.height ?: decor.height
+        // Only the app window's own bars count; the player may hide the nav bar.
+        val barsLeft = if (hostView != null) 0 else bars?.left ?: 0
+        val barsRight = if (hostView != null) 0 else bars?.right ?: 0
+        val barsBottom = if (hostView != null) 0 else bars?.bottom ?: 0
+        val left = maxOf(barsLeft.toFloat(), 12 * d)
+        val top = 12 * d
+        val right = maxOf(barsRight.toFloat(), 12 * d)
+        val bottom = maxOf(barsBottom.toFloat(), 96 * d)
+        val areaW = winW - left - right
+        val areaH = winH - top - bottom
+        val width = minOf(216 * d, minOf(360 * d, minOf(areaW, areaH * 16 / 9)))
+        val rtl = decor.layoutDirection == View.LAYOUT_DIRECTION_RTL
+        val x = origin[0] + left + if (rtl) 0f else areaW - width
+        val y = origin[1] + top + areaH - width * 9 / 16
+        return android.graphics.RectF(x, y, x + width, y + width * 9 / 16)
+    }
+
+    /** Where the video's parent sits on screen; the dock rect is in screen coordinates. */
+    private fun parentOrigin(): IntArray {
+        val origin = IntArray(2)
+        (findViewById<View>(R.id.player_root).parent as? View)?.getLocationOnScreen(origin)
+        return origin
+    }
+
+    private fun minimizeTravel(): Float {
+        val video = findViewById<View>(R.id.player_root)
+        return maxOf(1f, dockRectPx().top - parentOrigin()[1] - video.top)
+    }
+
+    private fun applyMinimize(p: Float) {
+        if (p <= 0f) { resetMinimize(); return }
+        val video = findViewById<View>(R.id.player_root)
+        val page = findViewById<View>(R.id.watch_root)
+        if (morphBackdrop == null) {
+            morphBackdrop = page.background
+            // Only while moving does the app behind need to show through.
+            window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+        }
+        minimizeP = p
+        val dock = dockRectPx()
+        val origin = parentOrigin()
+        dock.offset(-origin[0].toFloat(), -origin[1].toFloat())
+        val end = dock.width() / video.width
+        val scale = 1f + (end - 1f) * p
+        video.pivotX = 0f
+        video.pivotY = 0f
+        video.scaleX = scale
+        video.scaleY = scale
+        video.translationX = (video.left + (dock.left - video.left) * p) - video.left
+        video.translationY = (video.top + (dock.top - video.top) * p) - video.top
+        // Corners ease from the card's own radius to the mini player's 16dp.
+        // Counted in on-screen size, then divided by the scale the view is
+        // drawn at, so the first touch doesn't snap them square.
+        val screenRadius = cardRadiusPx + (16 * resources.displayMetrics.density - cardRadiusPx) * p
+        morphRadius = screenRadius / scale
+        if (!morphClipInstalled) {
+            morphClipInstalled = true
+            video.outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, morphRadius)
+                }
+            }
+            video.clipToOutline = true
+        }
+        video.invalidateOutline()
+        page.setBackgroundColor(android.graphics.Color.argb(((1f - p) * 255).toInt(), 0, 0, 0))
+        watchInfo?.let {
+            it.alpha = (1f - p * 3f).coerceIn(0f, 1f)
+            it.translationY = p * dp(80)
+        }
+        // Captions don't shrink with the card, so they fade out early instead.
+        playerView.subtitleView?.alpha = (1f - p * 3f).coerceIn(0f, 1f)
+    }
+
+    private fun resetMinimize() {
+        minimizeAnimator?.cancel()
+        minimizeAnimator = null
+        minimizeP = 0f
+        val video = findViewById<View>(R.id.player_root) ?: return
+        video.translationX = 0f
+        video.translationY = 0f
+        video.scaleX = 1f
+        video.scaleY = 1f
+        restoreCardClip(video)
+        morphBackdrop?.let { findViewById<View>(R.id.watch_root)?.background = it }
+        if (morphBackdrop != null) {
+            window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK))
+        }
+        morphBackdrop = null
+        dockFreeze?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        dockFreeze = null
+        watchInfo?.let { it.alpha = 1f; it.translationY = 0f }
+        playerView.subtitleView?.alpha = 1f
+    }
+
+    /** Finishes the move into the mini player ([commit]) or springs back. */
+    private fun settleMinimize(commit: Boolean) {
+        minimizeAnimator?.cancel()
+        val from = minimizeP
+        val to = if (commit) 1f else 0f
+        if (!rotationMotionEnabled()) {
+            if (commit) applyMinimize(1f)
+            finishMinimize(commit)
+            return
+        }
+        var cancelled = false
+        minimizeAnimator = ValueAnimator.ofFloat(from, to).apply {
+            duration = (120 + 260 * kotlin.math.abs(to - from)).toLong()
+            interpolator = DecelerateInterpolator(1.6f)
+            addUpdateListener { applyMinimize((it.animatedValue as Float).coerceAtLeast(0.0001f)) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (!cancelled) finishMinimize(commit)
+                }
+            })
+            start()
+        }
+    }
+
+    private fun finishMinimize(commit: Boolean) {
+        // The card stays in the dock's spot until the app takes over; if the
+        // hand-over is refused it returns to the full page.
+        if (!commit || !minimizeToApp(morphed = true)) resetMinimize()
+    }
+
+    /** The portrait watch page can morph; fullscreen and no-animation can't. */
+    private fun canMorph() = isPortraitCard() && rotationMotionEnabled()
+
+    /** Back chevron / back press: the same move, without a finger. */
+    private fun minimizeWithMorph(): Boolean {
+        if (!canMinimize()) return false
+        if (!canMorph() || minimizeP > 0f) return minimizeToApp()
+        applyMinimize(0.0001f)
+        settleMinimize(true)
+        return true
     }
 
     private fun restoreSpeedAfterHold() {
@@ -3262,7 +3748,7 @@ class PhonePlayerActivity : Activity() {
     private fun vHeight(): Float = findViewById<View>(R.id.player_root).height.toFloat()
 
     private fun syncPlayIcon() {
-        val playing = player?.isPlaying == true
+        val playing = player?.let { it.playWhenReady && it.playbackState != Player.STATE_ENDED } == true
         btnPlay.contentDescription = if (playing) getString(R.string.phone_player_state_pause) else getString(R.string.phone_player_state_play)
         val resource = if (playing) R.drawable.ic_pip_pause else R.drawable.ic_pip_play
         if (btnPlay.tag == resource) return
@@ -3336,6 +3822,71 @@ class PhonePlayerActivity : Activity() {
         }
     }
 
+    /**
+     * Keeps the content-warnings card clear of the top bar: while the controls
+     * are up it sits just under the title block; once they hide it floats up to
+     * the corner. Called wherever the controls show or hide.
+     */
+    private fun applyGuideMargins() {
+        val params = parentalGuide.layoutParams as FrameLayout.LayoutParams
+        // Lines up with the back arrow's glyph (bar margin + 12dp icon padding).
+        params.marginStart = dp(if (isPortraitCard()) 40 else 44)
+        params.topMargin = dp(GUIDE_TOP_DP)
+        parentalGuide.layoutParams = params
+    }
+
+    private fun syncGuidePlacement(animate: Boolean = true) {
+        if (!::parentalGuide.isInitialized) return
+        val bar = findViewById<View>(R.id.top_bar)
+        val controlsUp = controls.visibility == View.VISIBLE && !controlsHiding
+        val target = if (controlsUp && bar != null && bar.height > 0) {
+            (bar.bottom + dp(8) - dp(GUIDE_TOP_DP)).coerceAtLeast(0).toFloat()
+        } else 0f
+        guideShift?.cancel()
+        if (!animate) {
+            parentalGuide.translationY = target
+            return
+        }
+        guideShift = android.animation.ObjectAnimator
+            .ofFloat(parentalGuide, View.TRANSLATION_Y, target)
+            .setDuration(220)
+            .apply { start() }
+    }
+
+    /** Asks Dart for the content-warnings card once per episode and plays it. */
+    private fun showParentalGuide() {
+        val index = currentIndex
+        if (guideShownFor == index) return
+        // Never over the docked mini player.
+        if (docked && dockView != null) return
+        guideShownFor = index
+        val generation = mediaGeneration
+        PhonePlayerBridge.channel?.invokeMethod(
+            "parentalGuideFor",
+            mapOf("sessionId" to sessionId, "index" to index),
+            object : io.flutter.plugin.common.MethodChannel.Result {
+                override fun success(result: Any?) {
+                    if (!uiAlive() || index != currentIndex) return
+                    if (generation != mediaGeneration || isInPictureInPictureMode) {
+                        // Dropped (a subtitle/source switch, or PiP): ask again on the next first frame.
+                        if (guideShownFor == index) guideShownFor = -1
+                        return
+                    }
+                    val warnings = (result as? List<*>).orEmpty().mapNotNull {
+                        val row = it as? Map<*, *> ?: return@mapNotNull null
+                        val label = row["label"] as? String ?: return@mapNotNull null
+                        val severity = row["severity"] as? String ?: return@mapNotNull null
+                        label to severity
+                    }
+                    syncGuidePlacement(animate = false)
+                    parentalGuide.show(warnings)
+                }
+                override fun error(code: String, message: String?, details: Any?) {}
+                override fun notImplemented() {}
+            },
+        )
+    }
+
     private fun syncSkipSegments(p: ExoPlayer, position: Long, duration: Long) {
         if (!playbackStarted || switching || p.playbackState != Player.STATE_READY ||
             loadedEpisodeIndex != currentIndex || loadingOverlay.visibility == View.VISIBLE
@@ -3398,7 +3949,7 @@ class PhonePlayerActivity : Activity() {
             if (!scrubbing) {
                 // Keep the drawable at the current position when rotation replaces the track.
                 seek.progress = (pos * 1000 / d).toInt().coerceIn(0, 1000)
-                timeText.text = if (isPortraitCard()) fmt(pos).padStart(5, '0') + " / " + fmt(d).padStart(5, '0') else fmt(pos) + " / " + fmt(d)
+                timeText.text = timeLabel(pos, d)
                 seek.contentDescription = getString(R.string.phone_player_desc_seek) + ", " + fmt(pos) + " of " + fmt(d)
             }
         }
@@ -3425,6 +3976,7 @@ class PhonePlayerActivity : Activity() {
         controls.alpha = 0f
         controls.scaleX = 0.96f
         controls.scaleY = 0.96f
+        syncGuidePlacement()
         controls.animate()
             .alpha(1f)
             .scaleX(1f)
@@ -3450,6 +4002,7 @@ class PhonePlayerActivity : Activity() {
             controls.pivotX = controls.width / 2f
             controls.pivotY = controls.height / 2f
         }
+        syncGuidePlacement()
         controls.animate()
             .alpha(0f)
             .scaleX(0.96f)
@@ -3477,6 +4030,15 @@ class PhonePlayerActivity : Activity() {
         if (controlsHiding) restoreControls()
         handler.removeCallbacks(hideRunnable)
         if (player?.isPlaying == true) handler.postDelayed(hideRunnable, 4_000L)
+    }
+
+    /** Tap the time chip to flip the total into a "-remaining" countdown, like the MPV player. */
+    private var showRemaining = false
+
+    private fun timeLabel(pos: Long, d: Long): String {
+        val total = if (showRemaining) "-" + fmt((d - pos).coerceAtLeast(0L)) else fmt(d)
+        return if (isPortraitCard()) fmt(pos).padStart(5, '0') + " / " + total.padStart(5, '0')
+        else fmt(pos) + " / " + total
     }
 
     private fun fmt(ms: Long): String {
@@ -3563,6 +4125,7 @@ class PhonePlayerActivity : Activity() {
                 PhonePlayerIntent.RESULT_POSITION to positionMs,
                 PhonePlayerIntent.RESULT_DURATION to durationMs,
                 "engineFallback" to engineFallbackRequested,
+                "ended" to (player?.playbackState == Player.STATE_ENDED),
                 "url" to currentUrl,
                 PhonePlayerIntent.RESULT_EP_INDEX to loadedEpisodeIndex,
                 PhonePlayerIntent.RESULT_PLAYBACK_ERROR to playbackError,
@@ -3591,9 +4154,13 @@ class PhonePlayerActivity : Activity() {
     // here rather than in onCreate.
     override fun onResume() {
         super.onResume()
+        pip.onResumed()
+        pausedFromPip = false
         if (docked) {
+            val openOut = restoringDock && minimizeP > 0f
             docked = false
             restoringDock = false
+            if (openOut) window.decorView.post { settleMinimize(false) }
             PhonePlayerBridge.dockHost()?.clearPhoneDockPip()
             dockView?.let(::detachDockView)
             pip.autoEnter = autoPipEnabled
@@ -3626,17 +4193,38 @@ class PhonePlayerActivity : Activity() {
         newConfig: Configuration,
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        // The app behind a PiP window is live and visible; it must not stay frozen.
+        PhonePlayerBridge.channel?.invokeMethod(
+            "playerPip",
+            mapOf("sessionId" to sessionId, "inPip" to isInPictureInPictureMode),
+        )
         if (isInPictureInPictureMode) {
+            pip.onEntered()
             pip.applyParams()
             // Only the system window chrome should be visible in PiP.
             updateSegmentButton(null)
+            parentalGuide.hideNow()
             controls.visibility = View.GONE
         } else {
             bumpControls()
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        // Out of sight now; the next visit starts from the full page.
+        if (minimizeP > 0f) resetMinimize()
+        if (pip.consumeDismissal()) {
+            pausedFromPip = true
+            player?.pause()
+            sendProgress()
+        }
+    }
+
     override fun onDestroy() {
+        guideShift?.cancel()
+        handler.removeCallbacks(speedTick)
+        cancelDockHandoff()
         if (::seekPreview.isInitialized) seekPreview.close()
         segmentTimer.cancel()
         episodePanel?.setOnDismissListener(null)
@@ -3679,9 +4267,10 @@ class PhonePlayerActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (pendingHostFront != null) return // already minimizing
         if (controlsLocked) { setControlsLocked(false); return }
         if (loadingActions.visibility == View.VISIBLE) { finish(); return }
-        if (inAppMiniPlayerEnabled && (showWatchPage() || minimizeToApp())) return
+        if (inAppMiniPlayerEnabled && (showWatchPage() || minimizeWithMorph())) return
         if (controls.visibility == View.VISIBLE) { hideControls(); return }
         if (showWatchPage()) return
         @Suppress("DEPRECATION")

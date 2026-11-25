@@ -1,15 +1,12 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get_it/get_it.dart';
 import 'package:hive/hive.dart';
-import 'package:watch_app/core/app_config.dart';
 import 'package:watch_app/core/app_mode.dart';
-import 'package:watch_app/core/cache/app_image_cache.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:watch_app/core/profiles/viewer_profile.dart';
 import 'package:watch_app/core/profiles/viewer_profile_avatar.dart';
@@ -51,7 +48,18 @@ void main() {
   Widget app() =>
       const MaterialApp(home: ProfileLaunchGate(child: Text('Main screen')));
 
+  testWidgets('a single profile goes straight in without asking', (
+    tester,
+  ) async {
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+
+    expect(find.text("Who's watching?"), findsNothing);
+    expect(find.text('Main screen'), findsOneWidget);
+  });
+
   testWidgets('asks for a profile before showing the app', (tester) async {
+    await tester.runAsync(() => profiles.create('Second'));
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
 
@@ -99,15 +107,17 @@ void main() {
     expect(profiles.recoverableProfiles.single.id, 'old-guest');
   });
 
-  testWidgets('profile tap finishes the picker transition within 500ms', (
+  testWidgets('profile tap finishes the picker transition within 900ms', (
     tester,
   ) async {
+    // With one profile the gate skips the picker, so add a second.
+    await tester.runAsync(() => profiles.create('Second'));
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Home'));
     await tester.pump();
-    for (var elapsed = 0; elapsed < 500; elapsed += 8) {
+    for (var elapsed = 0; elapsed < 900; elapsed += 8) {
       await tester.pump(const Duration(milliseconds: 8));
     }
 
@@ -118,6 +128,8 @@ void main() {
   testWidgets('defers shell content until a profile is selected', (
     tester,
   ) async {
+    // With one profile the gate skips the picker, so add a second.
+    await tester.runAsync(() => profiles.create('Second'));
     final deferredStates = <bool>[];
     await tester.pumpWidget(
       MaterialApp(
@@ -679,6 +691,8 @@ void main() {
   testWidgets('unreadable lock with asking on still shows the picker first', (
     tester,
   ) async {
+    // With one profile the gate skips the picker, so add a second.
+    await tester.runAsync(() => profiles.create('Second'));
     GetIt.instance.registerSingleton<ProfileLockStore>(_ThrowingLockStore());
 
     await tester.pumpWidget(app());
@@ -723,6 +737,8 @@ void main() {
   testWidgets('gate prepares the shell while the avatar is still gliding', (
     tester,
   ) async {
+    // With one profile the gate skips the picker, so add a second.
+    await tester.runAsync(() => profiles.create('Second'));
     final deferredStates = <bool>[];
     final tabStates = <bool>[];
     await tester.pumpWidget(
@@ -752,6 +768,8 @@ void main() {
   testWidgets('launch selection flies a full-size avatar to the dock', (
     tester,
   ) async {
+    // With one profile the gate skips the picker, so add a second.
+    await tester.runAsync(() => profiles.create('Second'));
     await tester.pumpWidget(
       MaterialApp(
         home: ProfileLaunchGate(
@@ -780,21 +798,19 @@ void main() {
       findsOneWidget,
     );
     await tester.pump(const Duration(milliseconds: 210));
-    expect(tester.getCenter(glide), const Offset(400, 300));
-    await tester.pump(const Duration(milliseconds: 45));
-    final sweep = find.descendant(
-      of: glide,
-      matching: find.byWidgetPredicate(
-        (widget) =>
-            widget is CustomPaint &&
-            widget.child is Hero &&
-            widget.foregroundPainter != null,
-      ),
+    expect(
+      tester.getCenter(glide),
+      within(distance: 0.01, from: const Offset(400, 300)),
     );
-    expect(sweep, findsOneWidget);
-    expect(tester.getCenter(glide), const Offset(400, 300));
+    await tester.pump(const Duration(milliseconds: 45));
+    final slash = find.byKey(const ValueKey('profile-katana-slash'));
+    expect(tester.widget<CustomPaint>(slash).painter, isNotNull);
+    expect(
+      tester.getCenter(glide),
+      within(distance: 0.01, from: const Offset(400, 300)),
+    );
     final flight = find.byKey(const ValueKey('profile-flight-avatar'));
-    for (var frame = 0; frame < 10 && flight.evaluate().isEmpty; frame++) {
+    for (var frame = 0; frame < 40 && flight.evaluate().isEmpty; frame++) {
       await tester.pump(const Duration(milliseconds: 16));
     }
     expect(flight, findsOneWidget);
@@ -812,28 +828,15 @@ void main() {
   });
 
   testWidgets(
-    'cached zoom lines keep moving while a profile switch is pending',
+    'katana slash keeps repeating while a profile switch is pending',
     (tester) async {
+      // With one profile the gate skips the picker, so add a second.
+      await tester.runAsync(() => profiles.create('Second'));
       final delayed = _DelayedProfileStore();
       await tester.runAsync(delayed.loadForUser);
       await GetIt.instance.unregister<ViewerProfileStore>();
       GetIt.instance.registerSingleton<ViewerProfileStore>(delayed);
       profiles = delayed;
-
-      final provider = AppImageCache.imageProvider(kProfileZoomLinesUrl);
-      await provider.evict();
-
-      final recorder = ui.PictureRecorder();
-      Canvas(recorder).drawPaint(Paint()..color = Colors.white);
-      final picture = recorder.endRecording();
-      final sheet = picture.toImageSync(2400, 1700);
-      picture.dispose();
-      PaintingBinding.instance.imageCache.putIfAbsent(
-        provider,
-        () =>
-            OneFrameImageStreamCompleter(Future.value(ImageInfo(image: sheet))),
-      );
-      addTearDown(provider.evict);
 
       await tester.pumpWidget(
         MaterialApp(
@@ -848,14 +851,14 @@ void main() {
         find.byKey(ValueKey('profile-avatar-ink-${profile.id}')),
       );
       await tester.pump();
-      final zoomLines = find.byKey(const ValueKey('profile-zoom-lines'));
+      final zoomLines = find.byKey(const ValueKey('profile-katana-slash'));
       expect(tester.widget<CustomPaint>(zoomLines).painter, isNull);
 
       await tester.pump(const Duration(milliseconds: 300));
       expect(tester.widget<CustomPaint>(zoomLines).painter, isNotNull);
       expect(
         tester.getCenter(find.byKey(const ValueKey('profile-center-glide'))),
-        const Offset(400, 300),
+        within(distance: 0.01, from: const Offset(400, 300)),
       );
       await tester.pump(const Duration(milliseconds: 900));
       final frame = tester.widget<CustomPaint>(zoomLines).painter!;

@@ -26,13 +26,16 @@ import '../../core/playback/playback_prefs.dart';
 import '../../core/playback/title_prefs.dart';
 import '../../core/playback/resume_store.dart';
 import '../../core/playback/source_selection.dart';
+import '../../core/playback/parental_guide_service.dart';
 import '../../core/playback/skip_service.dart';
 import '../../core/playback/subtitle_download_service.dart';
 import '../../core/playback/subtitle_language.dart';
 import '../../core/playback/subtitle_encode_skew.dart';
 import '../../core/playback/subtitle_font_stage.dart';
 import '../../core/playback/tv_track_helpers.dart';
+import '../../core/ui/subtitle_language_picker.dart';
 import '../../core/playback/watch_history.dart';
+import '../../core/playback/tv_playback_helpers.dart' show shouldScrobble;
 import '../../core/theme/app_colors.dart';
 import '../../core/tracker/tracker_hub.dart';
 import '../../core/tracker/simkl_playback_session.dart';
@@ -41,12 +44,22 @@ import 'subtitle_font_service.dart';
 import 'player_controls_config.dart';
 import 'player_engine_fallback.dart';
 import 'player_lifecycle.dart';
-import 'player_screen.dart' show openSubtitleStyleSheet;
+import 'player_screen.dart'
+    show openSubtitleStyleSheet, showOnlineSubtitleSheet;
 import 'subtitle_style.dart';
 import 'watch_page_info.dart';
 import 'in_app_mini_player.dart';
 import '../../l10n/l10n.dart';
 import '../detail/cubit/detail_cubit.dart' show seasonOf;
+
+/// True once the native player has put its first frame on screen. The loading
+/// cover Flutter keeps underneath it is only needed until then; afterwards it
+/// would show through the player's see-through window while it is dragged.
+final phoneNativeStarted = ValueNotifier<bool>(false);
+
+/// True while the native player is the screen in front of the app (not docked,
+/// not closed). The app behind it can stop animating then.
+final phoneNativeInFront = ValueNotifier<bool>(false);
 
 /// Rejects stale sessions and malformed writes before touching saved controls.
 PlayerControlsConfig? phoneControlLayoutForSave(
@@ -257,7 +270,8 @@ Map<String, dynamic> phonePlayerArgs({
   required double subtitleScale,
   required int subtitleFgColor,
   required int subtitleBgColor,
-  required int subtitleEdgeType,
+  String subtitleOutlineType = 'soft',
+  double subtitleOutlineWidth = 2.0,
   required int subtitleEdgeColor,
   required String subtitlePreference,
   int subtitlePosition = 95,
@@ -329,7 +343,8 @@ Map<String, dynamic> phonePlayerArgs({
     'subtitleScale': subtitleScale,
     'subtitleFgColor': subtitleFgColor,
     'subtitleBgColor': subtitleBgColor,
-    'subtitleEdgeType': subtitleEdgeType,
+    'subtitleOutlineType': subtitleOutlineType,
+    'subtitleOutlineWidth': subtitleOutlineWidth,
     'subtitleEdgeColor': subtitleEdgeColor,
     'subtitlePreference': subtitlePreference,
     'subtitlePosition': subtitlePosition.clamp(0, 100),
@@ -391,13 +406,26 @@ Future<void> phoneScrobbleOnLaunch({
   );
 }
 
-bool phoneShouldScrobbleOnFirstFrame({
+/// Whether the episode now counts as watched on AniList / MAL: the same rule
+/// the MPV and TV players use. Past 92%, or the stream ended on its own (covers
+/// streams that never report a length). Once per episode, never while peeking.
+bool phoneShouldScrobbleOnProgress({
   required bool playerOpen,
-  required bool alreadyScrobbled,
   required bool peek,
-  required int episodeIndex,
-  required int startIndex,
-}) => playerOpen && !alreadyScrobbled && !peek && episodeIndex == startIndex;
+  required bool alreadyScrobbled,
+  required int positionMs,
+  required int durationMs,
+  required bool ended,
+}) =>
+    playerOpen &&
+    !peek &&
+    !alreadyScrobbled &&
+    (ended ||
+        shouldScrobble(
+          positionMs: positionMs,
+          durationMs: durationMs,
+          alreadyScrobbled: false,
+        ));
 
 typedef PhoneSourcesPoll =
     Future<({List<VideoSource> sources, bool done})> Function(
@@ -424,6 +452,8 @@ Future<bool> launchPhonePlayback({
   required int startIndex,
   required ResumeStore resume,
   required Future<List<VideoSource>> Function(String episodeUrl) resolveSources,
+  Future<List<VideoSource>?> Function(String episodeUrl)?
+  resolveDownloadedSources,
   PhoneSourcesPoll? pollSources,
   int resumePosition = 0,
   bool peek = false,
@@ -457,6 +487,7 @@ Future<bool> launchPhonePlayback({
     startIndex: startIndex,
     resume: resume,
     resolveSources: resolveSources,
+    resolveDownloadedSources: resolveDownloadedSources,
     pollSources: pollSources,
     resumePosition: resumePosition,
     peek: peek,
@@ -534,6 +565,8 @@ class PhoneNativePlayer {
   static Completer<Map<String, dynamic>?>? _closed;
 
   static Future<List<VideoSource>> Function(String episodeUrl)? _resolve;
+  static Future<List<VideoSource>?> Function(String episodeUrl)?
+  _resolveDownloaded;
   static PhoneSourcesPoll? _pollSources;
   static List<Episode> _episodes = const [];
   static String _sourceId = '';
@@ -570,7 +603,8 @@ class PhoneNativePlayer {
   static int _startIndex = 0;
   static int _resumeOverride = 0;
   static bool _seedUsed = false;
-  static bool _scrobbled = false;
+  static final Set<int> _scrobbledEpisodes = {};
+  static bool _markedWatching = false;
   static SimklPlaybackSession? _simklPlayback;
   static int _simklIndex = -1;
   static bool _isMovie = false;
@@ -626,6 +660,8 @@ class PhoneNativePlayer {
     required ResumeStore resume,
     required Future<List<VideoSource>> Function(String episodeUrl)
     resolveSources,
+    Future<List<VideoSource>?> Function(String episodeUrl)?
+    resolveDownloadedSources,
     PhoneSourcesPoll? pollSources,
     int resumePosition = 0,
     bool peek = false,
@@ -669,6 +705,7 @@ class PhoneNativePlayer {
     _engineSources.clear();
     _mirrorPollScope = null;
     _resolve = resolveSources;
+    _resolveDownloaded = resolveDownloadedSources;
     _pollSources = pollSources;
     _peek = peek;
     _episodes = episodes;
@@ -708,7 +745,8 @@ class PhoneNativePlayer {
     _startIndex = startIndex;
     _resumeOverride = resumePosition;
     _seedUsed = false;
-    _scrobbled = false;
+    _scrobbledEpisodes.clear();
+    _markedWatching = false;
     _simklPlayback?.stop();
     _simklPlayback = null;
     _simklIndex = -1;
@@ -746,7 +784,8 @@ class PhoneNativePlayer {
         '#000000',
         opacity: prefs.subtitleBgOpacity,
       ).toARGB32(),
-      subtitleEdgeType: tvEdgeTypeFromOutlinePref(prefs.subtitleOutlineType),
+      subtitleOutlineType: prefs.subtitleOutlineType,
+      subtitleOutlineWidth: prefs.subtitleOutlineWidth,
       subtitleEdgeColor: parseSubtitleHex(
         prefs.subtitleOutlineColorHex,
       ).toARGB32(),
@@ -805,6 +844,8 @@ class PhoneNativePlayer {
       sessionId: _sessionId,
     );
 
+    phoneNativeStarted.value = false;
+    phoneNativeInFront.value = false;
     _closed = Completer<Map<String, dynamic>?>();
     final launched = await _ch.invokeMethod<bool>('launch', args) ?? false;
     if (!launched) {
@@ -890,7 +931,8 @@ class PhoneNativePlayer {
               '#000000',
               opacity: prefs.subtitleBgOpacity,
             ).toARGB32(),
-            'edgeType': tvEdgeTypeFromOutlinePref(prefs.subtitleOutlineType),
+            'outlineType': prefs.subtitleOutlineType,
+            'outlineWidth': prefs.subtitleOutlineWidth,
             'edgeColor': parseSubtitleHex(
               prefs.subtitleOutlineColorHex,
             ).toARGB32(),
@@ -906,9 +948,82 @@ class PhoneNativePlayer {
     }
   }
 
+  /// Same Flutter picker the MPV sheet uses, shown over the native player.
+  static Future<void> _pickSubtitleLanguage(int sessionId) async {
+    final navigator = rootNavigatorKey.currentState;
+    if (navigator == null || _subtitleStyleOpen) return;
+    _subtitleStyleOpen = true;
+    final cover = PageRouteBuilder<void>(
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      pageBuilder: (_, _, _) => const SizedBox.expand(),
+    );
+    unawaited(navigator.push(cover));
+    try {
+      final prefs = sl<PlaybackPrefs>();
+      final picked = await showSubtitleLanguagePicker(
+        navigator.context,
+        prefs.subtitlePreference,
+        onRoute: (route) => _subtitleStyleRoute = route,
+      );
+      if (picked != null && sessionId == _sessionId) {
+        await prefs.setSubtitlePreference(picked);
+        await _ch.invokeMethod('setSubtitlePreference', {
+          'sessionId': sessionId,
+          'value': picked,
+        });
+      }
+    } finally {
+      _subtitleStyleRoute = null;
+      _subtitleStyleOpen = false;
+      if (navigator.mounted && cover.isActive) navigator.removeRoute(cover);
+    }
+  }
+
+  /// Online subtitle search over the native player; the chosen file is handed
+  /// back to the player as a new track.
+  static Future<void> _searchSubtitlesOnline(int sessionId) async {
+    final navigator = rootNavigatorKey.currentState;
+    if (navigator == null || _subtitleStyleOpen) return;
+    _subtitleStyleOpen = true;
+    final cover = PageRouteBuilder<void>(
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      pageBuilder: (_, _, _) => const SizedBox.expand(),
+    );
+    unawaited(navigator.push(cover));
+    try {
+      final title = _showTitle.trim().isNotEmpty
+          ? _showTitle.trim()
+          : (_scrobbleTitle?.trim() ?? '');
+      await showOnlineSubtitleSheet(
+        navigator.context,
+        initialQuery: title,
+        imdbId: _imdbId,
+        tmdbId: _tmdbId,
+        onRoute: (route) => _subtitleStyleRoute = route,
+        onApply: (path) async {
+          if (sessionId != _sessionId) return;
+          final name = path.split(RegExp(r'[\\/]')).last;
+          final dot = name.lastIndexOf('.');
+          await _ch.invokeMethod('addLocalSubtitle', {
+            'sessionId': sessionId,
+            'path': path,
+            'label': dot > 0 ? name.substring(0, dot) : name,
+          });
+        },
+      );
+    } finally {
+      _subtitleStyleRoute = null;
+      _subtitleStyleOpen = false;
+      if (navigator.mounted && cover.isActive) navigator.removeRoute(cover);
+    }
+  }
+
   static Future<dynamic> _onNativeCall(MethodCall call) async {
     switch (call.method) {
       case 'playerDocked':
+        phoneNativeInFront.value = false;
         final args = _callArgs(call);
         if (args?['sessionId'] != _sessionId || _closed?.isCompleted != false) {
           return null;
@@ -926,6 +1041,7 @@ class PhoneNativePlayer {
           key: ValueKey(session),
           retainedRoute: handoff?.content,
           entranceReady: frame.future,
+          entranceAnimated: args?['morphed'] != true,
           video: AndroidView(
             viewType: 'zangetsu/phone_player_dock',
             creationParams: session,
@@ -946,6 +1062,23 @@ class PhoneNativePlayer {
           onClose: () => unawaited(closeDockedPlayback()),
           onRestore: () => unawaited(_dockCommand('restoreDock', session)),
         );
+        if (args?['morphed'] == true) {
+          // The native card stays up until this mini player is really on
+          // screen, so there is no gap where nothing shows.
+          unawaited(
+            frame.future
+                .timeout(const Duration(milliseconds: 450), onTimeout: () {})
+                .then((_) async {
+                  // The mini player's video surface stays black for a few
+                  // frames after it reports ready; let it fill in first.
+                  await Future<void>.delayed(const Duration(milliseconds: 300));
+                  await WidgetsBinding.instance.endOfFrame;
+                  if (_dockedSession == session) {
+                    await _ch.invokeMethod('dockShown', {'sessionId': session});
+                  }
+                }),
+          );
+        }
         return null;
       case 'dockPlayingChanged':
         final args = _callArgs(call);
@@ -953,9 +1086,17 @@ class PhoneNativePlayer {
           _dockPlaying.add(args?['playing'] == true);
         }
         return null;
+      case 'playerPip':
+        final args = _callArgs(call);
+        if (args?['sessionId'] == _sessionId && _dockedSession != _sessionId) {
+          // In a PiP window the app behind is on screen and must animate.
+          phoneNativeInFront.value = args?['inPip'] != true;
+        }
+        return null;
       case 'playerUndocked':
         final session = (_callArgs(call)?['sessionId'] as num?)?.toInt();
         if (session != null) _hideDock(session, restoreRoute: true);
+        phoneNativeInFront.value = true;
         return null;
       case 'rememberStremioLink':
       case 'addonSubtitles':
@@ -1008,6 +1149,21 @@ class PhoneNativePlayer {
           return null;
         }
         await _showSubtitleStyle(_sessionId);
+        return null;
+      case 'openOnlineSubtitles':
+        final onlineArgs = _callArgs(call);
+        if (_closed?.isCompleted != false ||
+            onlineArgs?['sessionId'] != _sessionId) {
+          return null;
+        }
+        await _searchSubtitlesOnline(_sessionId);
+        return null;
+      case 'openSubtitleLanguage':
+        final args = _callArgs(call);
+        if (_closed?.isCompleted != false || args?['sessionId'] != _sessionId) {
+          return null;
+        }
+        await _pickSubtitleLanguage(_sessionId);
         return null;
       case 'closeSubtitleStyle':
         final route = _subtitleStyleRoute;
@@ -1097,6 +1253,24 @@ class PhoneNativePlayer {
               },
           ],
         };
+      case 'parentalGuideFor':
+        final gArgs = _callArgs(call);
+        final gIndex = (gArgs?['index'] as num?)?.toInt() ?? -1;
+        if (_closed?.isCompleted != false ||
+            gArgs?['sessionId'] != _sessionId ||
+            gIndex < 0 ||
+            gIndex >= _episodes.length ||
+            !sl<PlaybackPrefs>().parentalGuide) {
+          return null;
+        }
+        // Anime has no IMDb entry; skip the lookup rather than guess.
+        if (_malId != null || _scrobbleTitle != null) return null;
+        final warnings = await sl<ParentalGuideService>().warnings(
+          imdbId: _imdbId,
+          tmdbId: _tmdbId,
+          isTv: !_isMovie,
+        );
+        return [for (final w in warnings) w.toJson()];
       case 'resolveEpisode':
         final rArgs = _callArgs(call);
         final index = (rArgs?['index'] as num?)?.toInt() ?? -1;
@@ -1104,6 +1278,11 @@ class PhoneNativePlayer {
         return _resolveEpisode(index);
       case 'playbackStarted':
         final args = _callArgs(call);
+        if (args?['sessionId'] == _sessionId) {
+          phoneNativeStarted.value = true;
+          // A first frame on the dock's view means it is minimized, not in front.
+          phoneNativeInFront.value = args?['docked'] != true;
+        }
         final frame = _dockFrame;
         if (frame != null &&
             !frame.isCompleted &&
@@ -1122,28 +1301,29 @@ class PhoneNativePlayer {
             unawaited(_pollLateMirrors(scope));
           }
         }
-        if (!phoneShouldScrobbleOnFirstFrame(
-          playerOpen: _closed?.isCompleted == false,
-          alreadyScrobbled: _scrobbled,
-          peek: _peek,
-          episodeIndex: index,
-          startIndex: _startIndex,
-        )) {
-          return null;
+        // Like the MPV player: starting only marks the title as "watching".
+        // The episode itself counts as watched later, past 92% (see
+        // _saveProgress), so opening and closing straight away changes nothing.
+        if (!_markedWatching &&
+            !_peek &&
+            _closed?.isCompleted == false &&
+            sl.isRegistered<TrackerHub>() &&
+            (_malId != null ||
+                (_scrobbleTitle?.isNotEmpty ?? false) ||
+                _tmdbId != null ||
+                (_imdbId?.isNotEmpty ?? false))) {
+          _markedWatching = true;
+          unawaited(
+            sl<TrackerHub>().markWatching(
+              malId: _malId,
+              title: _scrobbleTitle,
+              tmdbId: _tmdbId,
+              tmdbIsTv: _tmdbIsTv,
+              imdbId: _imdbId,
+              simklLive: true,
+            ),
+          );
         }
-        _scrobbled = true;
-        unawaited(
-          phoneScrobbleOnLaunch(
-            episode: _episodes[index],
-            episodes: _episodes,
-            malId: _malId,
-            scrobbleTitle: _scrobbleTitle,
-            tmdbId: _tmdbId,
-            tmdbIsTv: _tmdbIsTv,
-            imdbId: _imdbId,
-            simklLive: true,
-          ),
-        );
         return null;
       case 'watchDownloadOptions':
       case 'watchDownloadChoose':
@@ -1566,7 +1746,7 @@ class PhoneNativePlayer {
         return null;
       case 'saveProgress':
         final args = _callArgs(call);
-        await _saveProgress(args, flush: true);
+        await _saveProgress(args, flush: args?['periodic'] != true);
         _preheatNearEnd(args);
         return null;
       case 'playerClosed':
@@ -1613,6 +1793,8 @@ class PhoneNativePlayer {
         _engineFallback = null;
         if (_closed?.isCompleted == false) _closed!.complete(args);
         _closed = null;
+        phoneNativeStarted.value = false;
+        phoneNativeInFront.value = false;
         _prefetchedEpisodes.clear();
         _downloadChoice = null;
         _downloadToken++;
@@ -1733,7 +1915,10 @@ class PhoneNativePlayer {
     // Keyless auto-download for subtitle-less sources: the native player has
     // no fetch of its own, so mirror the built-in player's silent fallback
     // here at resolve time (URL-handed, like the TV player — no temp files).
-    if (src.subtitles.isEmpty && sl<PlaybackPrefs>().autoDownloadSubtitles) {
+    final scheme = Uri.tryParse(src.url)?.scheme;
+    if ((scheme == 'http' || scheme == 'https') &&
+        src.subtitles.isEmpty &&
+        sl<PlaybackPrefs>().autoDownloadSubtitles) {
       final prefLang = languageByPref(
         sl<PlaybackPrefs>().preferredSubtitleLanguage,
       );
@@ -1904,6 +2089,14 @@ class PhoneNativePlayer {
     bool preferPolled = false,
   }) async {
     final url = tvEpisodeUrl(ep.url, _category);
+    final resolveDownloaded = _resolveDownloaded;
+    if (resolveDownloaded != null) {
+      final session = _sessionId;
+      final category = _category;
+      final downloaded = await resolveDownloaded(ep.url);
+      if (session != _sessionId || category != _category) return const [];
+      if (downloaded != null && downloaded.isNotEmpty) return downloaded;
+    }
     if (preferPolled && _pollSources != null) {
       try {
         final deadline = DateTime.now().add(const Duration(seconds: 3));
@@ -1977,6 +2170,30 @@ class PhoneNativePlayer {
       Duration(milliseconds: positionMs),
       Duration(milliseconds: durationMs),
     );
+    if (phoneShouldScrobbleOnProgress(
+      playerOpen: _closed?.isCompleted == false,
+      peek: _peek,
+      alreadyScrobbled: _scrobbledEpisodes.contains(i),
+      positionMs: positionMs,
+      durationMs: durationMs,
+      ended: args['ended'] == true,
+    )) {
+      _scrobbledEpisodes.add(i);
+      unawaited(
+        phoneScrobbleOnLaunch(
+          episode: ep,
+          episodes: _episodes,
+          malId: _malId,
+          scrobbleTitle: _scrobbleTitle,
+          tmdbId: _tmdbId,
+          tmdbIsTv: _tmdbIsTv,
+          imdbId: _imdbId,
+          // Simkl follows the live session already; a second write would
+          // count the episode twice.
+          simklLive: _simklPlayback != null && durationMs > 0,
+        ),
+      );
+    }
     final history = _history;
     if (history != null && _showTitle.isNotEmpty) {
       unawaited(

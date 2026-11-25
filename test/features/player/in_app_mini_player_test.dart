@@ -77,7 +77,74 @@ void main() {
     expect(restores, 1);
   });
 
-  testWidgets('dock animates in, then grows and fades before expanding', (
+  testWidgets('dragging past the bottom edge dismisses the mini-player', (
+    tester,
+  ) async {
+    var closes = 0;
+    const video = ValueKey('dismiss-video');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: InAppMiniPlayer(
+            video: const ColoredBox(key: video, color: Colors.black),
+            playing: true,
+            playPauseLabel: 'Pause',
+            closeLabel: 'Close',
+            restoreLabel: 'Restore player',
+            onTogglePlayback: () {},
+            onClose: () => closes++,
+            onRestore: () => fail('Dragging must not restore playback'),
+          ),
+        ),
+      ),
+    );
+
+    final finder = find.byKey(video);
+    final initial = tester.getCenter(finder);
+    Future<TestGesture> dragDown(double distance) async {
+      final gesture = await tester.startGesture(initial);
+      await gesture.moveBy(const Offset(0, 20));
+      await gesture.moveBy(Offset(0, distance));
+      await tester.pump();
+      return gesture;
+    }
+
+    final shortDrag = await dragDown(20);
+    expect(find.byType(BackdropFilter), findsNothing); // solid, not frosted
+    final hint = find.text('Drag down to dismiss');
+    expect(hint, findsOneWidget);
+    expect(tester.getRect(hint).top, greaterThan(initial.dy));
+    await shortDrag.up();
+    await tester.pumpAndSettle();
+    expect(tester.getCenter(finder), initial);
+    expect(find.text('Drag down to dismiss'), findsNothing);
+    expect(closes, 0);
+
+    final longDrag = await dragDown(80);
+    expect(find.text('Release to dismiss'), findsOneWidget);
+    expect(tester.getCenter(finder).dy, greaterThan(initial.dy));
+    expect(closes, 0);
+    await longDrag.up();
+    await tester.pump();
+    expect(closes, 1);
+
+    // A short, fast downward flick dismisses too.
+    await tester.pumpAndSettle();
+    // A barely-past-the-dock flick must not close it.
+    await tester.fling(
+      finder,
+      const Offset(0, 24),
+      1500,
+      warnIfMissed: false, // the video sits under the gesture layer
+    );
+    await tester.pumpAndSettle();
+    expect(closes, 1);
+    await tester.fling(finder, const Offset(0, 60), 1500, warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(closes, 2);
+  });
+
+  testWidgets('dock animates in, then hands over where it sits when expanded', (
     tester,
   ) async {
     final ready = Completer<void>();
@@ -123,14 +190,48 @@ void main() {
     expect(mid.bottom, inExclusiveRange(waiting.bottom, dock.bottom));
     await tester.tapAt(dock.center);
     await tester.pump();
+    expect(restored, isFalse);
     await tester.tap(find.byIcon(Icons.open_in_full_rounded));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 80));
-    expect(tester.getRect(finder).width, greaterThan(dock.width));
-    expect(restored, isFalse);
-    await tester.pumpAndSettle();
+    // The page itself animates out of the card, so the card hands over at once
+    // and remembers where it was.
     expect(restored, isTrue);
+    expect(lastDockedRect, isNotNull);
+    expect(lastDockedRect!.width, dock.width);
   });
+
+  testWidgets(
+    'a card that morphed in shows at once, without a second entrance',
+    (tester) async {
+      final ready = Completer<void>();
+      const video = ValueKey('morphed-video');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: InAppMiniPlayer(
+              entranceReady: ready.future,
+              entranceAnimated: false,
+              video: const ColoredBox(key: video, color: Colors.black),
+              playing: true,
+              playPauseLabel: 'Pause',
+              closeLabel: 'Close',
+              restoreLabel: 'Restore player',
+              onTogglePlayback: () {},
+              onClose: () {},
+              onRestore: () {},
+            ),
+          ),
+        ),
+      );
+      ready.complete();
+      await tester.pump();
+      // The very first frame after the video is ready is already the final one.
+      final settled = tester.getRect(find.byKey(video));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.byKey(video)), settled);
+      expect(settled.width, 216);
+    },
+  );
 
   testWidgets('two fingers resize the card without restoring playback', (
     tester,

@@ -52,6 +52,7 @@ import '../../core/stremio/stremio_ref.dart';
 import '../../core/stremio/stremio_stream_mapping.dart';
 import '../detail/stremio_episode_links_sheet.dart';
 import '../../core/ui/app_toast.dart';
+import '../../core/playback/parental_guide_service.dart';
 import '../../core/playback/skip_service.dart';
 import '../../core/playback/source_selection.dart';
 import '../../core/playback/subtitle_language.dart';
@@ -79,6 +80,7 @@ import 'watch_page_motion.dart';
 import 'watch_page_info.dart';
 import 'player_controls_config.dart';
 import 'player_tv_controls.dart';
+import 'parental_guide_card.dart';
 import 'seek_preview.dart';
 import 'color_profiles.dart';
 import 'shader_presets.dart';
@@ -1205,16 +1207,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
         if (!mounted) return;
         final inPip = status == PiPStatus.enabled;
         if (inPip != _inPip) {
-          // Log-only, and the reason is the absence of it: a report about
-          // closing the app while watching in picture-in-picture could not be
-          // read at all, because nothing anywhere recorded that PiP had been
-          // entered. The sole trace was Discord logging `paused` then
-          // `foreground` twice inside 15ms, which is not evidence.
-          //
-          // Read from the Dart-side status stream rather than the Activity
-          // callback on purpose: MainActivity.kt cannot currently be edited
-          // without breaking the Android build (any change to it fails on
-          // CfWebViewSolver), and a log line is not worth that.
           debugPrint(
             '[pip] ${inPip ? 'entered' : 'left'} · '
             'ep=${_c.state.currentIndex} '
@@ -1251,6 +1243,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
             _c.seekBy(const Duration(seconds: -10));
           case 'forward':
             _c.seekBy(const Duration(seconds: 10));
+          case 'dismissed':
+            if (_ready) await _c.player.pause();
         }
         return null;
       });
@@ -1332,6 +1326,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool _docked = false;
 
+  /// Set while the page reopens from the mini player so it can animate out
+  /// of the dock; cleared after that first frame.
+  bool _restoredFromDock = false;
+
+  /// Back asks the watch page to minimize with its own morph.
+  final _minimizeRequests = ValueNotifier<int>(0);
+
   bool get _supportsMinimize =>
       (Platform.isAndroid || Platform.isIOS) &&
       !sl<AppMode>().isTv &&
@@ -1343,7 +1344,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ? _minimize
       : null;
 
-  void _minimize() {
+  /// [morphed]: the watch page already carried the video to the dock's spot,
+  /// so the mini player appears there as-is instead of fading in.
+  void _minimize({bool morphed = false}) {
     final route = ModalRoute.of(context);
     if (route is! EpisodePlayerRoute ||
         !route.isCurrent ||
@@ -1362,7 +1365,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       return InAppMiniPlayer(
         video: video,
-        entranceReady: _c.videoController.waitUntilFirstFrameRendered,
+        entranceReady: morphed
+            ? null
+            : _c.videoController.waitUntilFirstFrameRendered,
         playing: _c.player.state.playing,
         playingChanges: _c.player.stream.playing,
         systemPipChanges: Platform.isAndroid && _pipSupported
@@ -1379,7 +1384,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
         onClose: _leavePlayer,
         onRestore: () {
           _lastOrientation = MediaQuery.orientationOf(context);
-          setState(() => _docked = false);
+          setState(() {
+            _docked = false;
+            _restoredFromDock = true;
+          });
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => _restoredFromDock = false,
+          );
           _orientationApplied = false;
           if (_presentation == PlayerPresentation.fullscreen) {
             _applyOrientationWhenCovered();
@@ -1432,6 +1443,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         startIndex: idx.clamp(0, eps.length - 1),
         resume: widget.resume,
         resolveSources: widget.resolveSources,
+        resolveDownloadedSources: widget.resolveDownloadedSources,
         pollSources: widget.pollSources,
         resumePosition: widget.resumePosition.inMilliseconds,
         peek: widget.peek,
@@ -1742,6 +1754,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // is released on pause, so a paused-and-forgotten player lets the screen time
   // out instead of burning battery at full brightness. Mirrors CloudStream.
   StreamSubscription<bool>? _playingSub;
+
+  // Content-warnings card: asked for once per episode, when its first frame is up.
+  StreamSubscription<int?>? _guideSub;
+  List<ParentalWarning> _guide = const [];
+  int _guideKey = 0;
+  int _guideForIndex = -1;
+
+  Future<void> _maybeShowGuide() async {
+    final index = _c.state.currentIndex;
+    if (_guideForIndex == index) return;
+    _guideForIndex = index;
+    // Anime has no IMDb entry; skip the lookup rather than guess.
+    if (widget.malId != null ||
+        widget.scrobbleTitle != null ||
+        !sl<PlaybackPrefs>().parentalGuide) {
+      return;
+    }
+    final found = await sl<ParentalGuideService>().warnings(
+      imdbId: widget.imdbId,
+      tmdbId: widget.tmdbId,
+      isTv: !widget.isMovie,
+    );
+    if (!mounted || found.isEmpty || index != _c.state.currentIndex) return;
+    setState(() {
+      _guide = found;
+      _guideKey++;
+    });
+  }
+
   StreamSubscription<bool>? _bufferingSub;
   bool _wakelockOn = false;
 
@@ -1817,6 +1858,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // playing/buffering, released on pause. Set up here (not _initInApp) because
     // _c isn't built until this point.
     _playingSub = _c.player.stream.playing.listen((_) => _syncWakelock());
+    _guideSub = _c.player.stream.width.listen((w) {
+      if ((w ?? 0) > 0) _maybeShowGuide();
+    });
     _bufferingSub = _c.player.stream.buffering.listen((_) => _syncWakelock());
     _syncWakelock();
 
@@ -2007,6 +2051,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _fullscreenRotationPull.dispose();
+    _minimizeRequests.dispose();
     _orientationTurns?.cancel();
     AppLogger.instance.log(
       '[player-route] dispose ready=$_ready '
@@ -2032,6 +2077,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _sleepTimer?.cancel();
     _completedSub?.cancel();
     _playingSub?.cancel();
+    _guideSub?.cancel();
     _stopAmbientSampler();
     _ambientFrames.close();
     _bufferingSub?.cancel();
@@ -2830,6 +2876,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
             },
           ),
         ),
+        if (_guide.isNotEmpty)
+          // Lines up with the back arrow (32 margin + 12 icon padding). Sits
+          // under the title block while the controls are up, and floats to the
+          // corner once they hide.
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            top:
+                MediaQuery.paddingOf(context).top +
+                (_controlsVisible ? 68 : 24),
+            left: 44,
+            child: IgnorePointer(
+              child: ParentalGuideCard(
+                key: ValueKey(_guideKey),
+                warnings: _guide,
+                onDone: () {
+                  if (mounted) setState(() => _guide = const []);
+                },
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -3382,6 +3449,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ambientFrameStream: _ambientFrames.stream,
       ambientEnabled: sl<PlaybackPrefs>().ambientPlayer,
       positionStream: _c.player.stream.position,
+      loadingOverlay: _loadingBackdropBody(
+        state.torrentPhase ??
+            (state.loadingSources ? 'Finding streams…' : 'Starting playback…'),
+        thumb: _c.currentEpisode.thumbnail,
+      ),
+      previewSource: () {
+        final uri = _c.previewUri;
+        if (uri == null) return null;
+        if (_c.isLocalMedia) {
+          return (uri: uri, headers: _c.previewHeaders, local: true);
+        }
+        final online =
+            Platform.isAndroid &&
+            !sl<AppMode>().isTv &&
+            (uri.startsWith('http'));
+        return online
+            ? (uri: uri, headers: _c.previewHeaders, local: false)
+            : null;
+      },
       durationStream: _c.player.stream.duration,
       playingStream: _c.player.stream.playing,
       initialPlaying: _c.player.state.playing,
@@ -3435,7 +3521,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
       onPrevious: () => _c.playPrevious(),
       onNext: () => _c.playNext(),
       onFullscreen: _enterFullscreen,
-      onMinimize: _minimizeAction,
+      onMinimize: _minimizeAction == null
+          ? null
+          // With animations off nothing carried the card to the dock, so the
+          // mini player keeps its first-frame wait.
+          : () => _minimize(morphed: !MediaQuery.disableAnimationsOf(context)),
+      startMinimized: _restoredFromDock,
+      minimizeRequests: _minimizeRequests,
       onBack: _minimizeAction ?? _handleCloseRequest,
       onServer: _openSourceSheet,
       onAudio: () => _openAudioSubsSheet(focus: AudioSubsFocus.audio),
@@ -3657,33 +3749,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final initialQuery = (widget.showTitle?.trim().isNotEmpty ?? false)
         ? widget.showTitle!.trim()
         : (widget.scrobbleTitle?.trim() ?? '');
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => _SheetSurface(
-        blur: true,
-        opacity: 0.82,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        child: SafeArea(
-          top: false,
-          child: _OnlineSubtitleSheet(
-            initialQuery: initialQuery,
-            // Default the manual search to the preferred language, falling back
-            // to English (the prior default) when no preference is set.
-            initialLanguage:
-                sl<PlaybackPrefs>().preferredSubtitleLanguage.isEmpty
-                ? 'en'
-                : sl<PlaybackPrefs>().preferredSubtitleLanguage,
-            imdbId: widget.imdbId,
-            tmdbId: widget.tmdbId,
-            onApply: (path) async {
-              await _c.setSubtitleFromFile(path);
-              _bumpControls();
-            },
-          ),
-        ),
-      ),
+    showOnlineSubtitleSheet(
+      context,
+      initialQuery: initialQuery,
+      imdbId: widget.imdbId,
+      tmdbId: widget.tmdbId,
+      onApply: (path) async {
+        await _c.setSubtitleFromFile(path);
+        _bumpControls();
+      },
     );
   }
 
@@ -3818,6 +3892,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return item == null ? null : sl<TitleLogoService>().cachedLogoFor(item);
   }
 
+  double? _lastCacheBytes;
+  DateTime? _lastCacheAt;
+
+  /// Bytes/s for the startup loader. `cache-speed` is 0 for HLS (ffmpeg does
+  /// the fetching, not mpv's stream layer), so fall back to how fast the
+  /// demuxer cache is growing between two polls.
+  Future<String?> _loadingSpeed() async {
+    final direct = double.tryParse(await _c.mpvStat('cache-speed') ?? '') ?? 0;
+    if (direct > 0) return '$direct';
+    final fw = double.tryParse(
+      await _c.mpvStat('demuxer-cache-state/fw-bytes') ?? '',
+    );
+    final now = DateTime.now();
+    final prev = _lastCacheBytes;
+    final at = _lastCacheAt;
+    _lastCacheBytes = fw;
+    _lastCacheAt = now;
+    if (fw == null || prev == null || at == null || fw < prev) return null;
+    final secs = now.difference(at).inMilliseconds / 1000;
+    return secs <= 0 ? null : '${(fw - prev) / secs}';
+  }
+
   Widget _loadingBackdropBody(String label, {String? thumb}) {
     final backdrop = (widget.loadingBackdrop ?? '').trim();
     final cover = (widget.cover ?? '').trim();
@@ -3829,31 +3925,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
         imageUrl: url,
         httpHeaders: playbackArtworkHeaders(url, cover, widget.coverHeaders),
         fit: BoxFit.cover,
+        alignment: Alignment.topCenter,
         memCacheWidth: 1080,
         errorWidget: (_, _, _) => fallback,
       );
     }
 
     const background = ColoredBox(color: Colors.black);
-    final fallback = artwork(
-      backdrop == thumbnail ? '' : backdrop,
+    // Show backdrop first, then the episode frame, then the cover.
+    final art = artwork(
+      backdrop,
       fallback: artwork(
-        cover == backdrop || cover == thumbnail ? '' : cover,
-        fallback: background,
+        thumbnail == backdrop ? '' : thumbnail,
+        fallback: artwork(
+          cover == backdrop || cover == thumbnail ? '' : cover,
+          fallback: background,
+        ),
       ),
     );
     return Stack(
       fit: StackFit.expand,
       children: [
         background,
-        artwork(thumbnail, fallback: fallback),
-        // Keep the moving title and status legible over the artwork.
+        art,
+        // Light at the top, heavy at the bottom, so the logo and status stay
+        // legible while the artwork still reads.
         const DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: [Color(0x99000000), Color(0xCC000000)],
+              stops: [0, 0.35, 0.7, 1],
+              colors: [
+                Color(0x4D000000),
+                Color(0x99000000),
+                Color(0xCC000000),
+                Color(0xE6000000),
+              ],
             ),
           ),
         ),
@@ -3861,13 +3969,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
           title: widget.showTitle ?? '',
           logo: _loadingLogo,
           status: label,
+          speed: _ready ? _loadingSpeed : null,
         ),
       ],
     );
   }
 
   Widget _watchPageLoadingShell() {
-    final title = (widget.showTitle ?? '').trim();
     final episodes = widget.episodes;
     final initialThumb = episodes.isEmpty
         ? null
@@ -3911,17 +4019,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: title.isEmpty
-                  ? const _ShellBar(width: 220, height: 18)
-                  : Text(
-                      title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppText.headline.copyWith(
-                        color: Colors.white,
-                        fontSize: 20,
-                      ),
-                    ),
+              // Placeholder bar, never the title: the loader above carries the
+              // logo / show name, and a second copy here was the stray title.
+              child: const _ShellBar(width: 220, height: 18),
             ),
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 6, 16, 0),
@@ -3976,9 +4076,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_chosenPlayer == PlaybackPrefs.androidPlayerId &&
         widget.episodesResolver != null &&
         !_ready) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: _loadingBackdropBody(context.l10n.loading),
+      // Gone once the native player shows its first frame: from then on the
+      // window above is see-through while dragged, and this must not show.
+      return ValueListenableBuilder<bool>(
+        valueListenable: phoneNativeStarted,
+        builder: (context, started, _) => started
+            ? const SizedBox.shrink()
+            : Scaffold(
+                backgroundColor: Colors.black,
+                body: _loadingBackdropBody(context.l10n.loading),
+              ),
       );
     }
     if (_chosenPlayer == PlaybackPrefs.androidPlayerId &&
@@ -4050,7 +4157,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
         margin: const EdgeInsets.symmetric(horizontal: 12),
       ),
       child: Scaffold(
-        backgroundColor: Colors.black,
+        // The watch page paints its own black and fades it while it is dragged
+        // into the mini player; a black Scaffold under it would hide the app
+        // that is meant to show through.
+        backgroundColor:
+            _presentation == PlayerPresentation.watchPage &&
+                _c.state.error == null
+            ? Colors.transparent
+            : Colors.black,
         body: BlocConsumer<PlayerCubit, PlayerState>(
           bloc: _c,
           // Nothing ever played: this episode is a dead end, so say so in a
@@ -4809,7 +4923,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
         }
         final minimize = _minimizeAction;
         if (minimize != null) {
-          minimize();
+          // On the watch page Back plays the same morph as dragging down.
+          if (_presentation == PlayerPresentation.watchPage) {
+            _minimizeRequests.value++;
+          } else {
+            minimize();
+          }
         } else {
           _handleCloseRequest();
         }
