@@ -6010,6 +6010,24 @@ abstract class AppLocalizations {
   /// **'Relations'**
   String get relations;
 
+  /// No description provided for @overview.
+  ///
+  /// In en, this message translates to:
+  /// **'Overview'**
+  String get overview;
+
+  /// No description provided for @director.
+  ///
+  /// In en, this message translates to:
+  /// **'Director'**
+  String get director;
+
+  /// No description provided for @writer.
+  ///
+  /// In en, this message translates to:
+  /// **'Writer'**
+  String get writer;
+
   /// No description provided for @characters.
   ///
   /// In en, this message translates to:

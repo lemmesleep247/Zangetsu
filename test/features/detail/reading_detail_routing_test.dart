@@ -630,7 +630,10 @@ void main() {
         sl.registerSingleton<CatalogueRepository>(stub);
         await tester.pumpWidget(
           MaterialApp(
-            home: DetailScreen(item: reading ? _novelItem : _animeItem),
+            home: DetailScreen(
+              item: reading ? _novelItem : _animeItem,
+              initialTab: 1,
+            ),
           ),
         );
         await tester.pump();
@@ -650,7 +653,7 @@ void main() {
     sl.registerSingleton<SourceRepository>(stub);
     sl.registerSingleton<CatalogueRepository>(stub);
     await tester.pumpWidget(
-      const MaterialApp(home: DetailScreen(item: _animeItem)),
+      const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
     );
     await tester.pump();
     expect(pool.preparations, 0);
@@ -673,7 +676,7 @@ void main() {
       sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _novelItem)),
+        const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
       );
       await tester.pump(); // let the cubit's load() resolve
       await tester.pump(); // flush _maybePrefetch's post-frame callback, if any
@@ -724,7 +727,7 @@ void main() {
       );
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _novelItem)),
+        const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -782,9 +785,13 @@ void main() {
       sl.registerSingleton<SourceRepository>(_StubSourceRepository(detail));
       sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
-      await tester.pumpWidget(MaterialApp(home: DetailScreen(item: item)));
+      await tester.pumpWidget(
+        MaterialApp(home: DetailScreen(item: item, initialTab: 1)),
+      );
       await tester.pump();
       await tester.pump();
+      // Loading fades into the page; a transparent page hides its semantics.
+      await tester.pump(const Duration(milliseconds: 400));
 
       await tester.tap(find.bySemanticsLabel('Download chapters'));
       await tester.pumpAndSettle();
@@ -815,7 +822,7 @@ void main() {
       sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _novelItem)),
+        const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -863,12 +870,12 @@ void main() {
       sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _animeItem)),
+        const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
 
-      await tester.tap(find.text('Download E1'));
+      await tester.tap(find.byTooltip('Download E1'));
       await tester.pumpAndSettle();
 
       expect(find.byTooltip('Custom range'), findsOneWidget);
@@ -923,11 +930,11 @@ void main() {
     sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
     await tester.pumpWidget(
-      const MaterialApp(home: DetailScreen(item: _animeItem)),
+      const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
     );
     await tester.pump();
     await tester.pump();
-    await tester.tap(find.text('Download E1'));
+    await tester.tap(find.byTooltip('Download E1'));
     await tester.pumpAndSettle();
 
     expect(find.byTooltip('Custom range'), findsNothing);
@@ -954,7 +961,7 @@ void main() {
     await sl.unregister<DownloadManager>();
     sl.registerSingleton<DownloadManager>(downloads);
     await tester.pumpWidget(
-      const MaterialApp(home: DetailScreen(item: _animeItem)),
+      const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
     );
     await tester.pump();
     await tester.pump();
@@ -995,7 +1002,7 @@ void main() {
       await sl.unregister<DownloadManager>();
       sl.registerSingleton<DownloadManager>(downloads);
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _animeItem)),
+        const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -1040,7 +1047,7 @@ void main() {
     await sl.unregister<DownloadManager>();
     sl.registerSingleton<DownloadManager>(downloads);
     await tester.pumpWidget(
-      const MaterialApp(home: DetailScreen(item: _animeItem)),
+      const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
     );
     await tester.pump();
     await tester.pump();
@@ -1082,7 +1089,7 @@ void main() {
       await sl.unregister<DownloadManager>();
       sl.registerSingleton<DownloadManager>(downloads);
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _animeItem)),
+        const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -1114,11 +1121,11 @@ void main() {
     );
     sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
     await tester.pumpWidget(
-      const MaterialApp(home: DetailScreen(item: _animeItem)),
+      const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
     );
     await tester.pump();
     await tester.pump();
-    await tester.tap(find.text('Download E1'));
+    await tester.tap(find.byTooltip('Download E1'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Dub').last);
     await tester.pumpAndSettle();
@@ -1146,7 +1153,7 @@ void main() {
       );
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _novelItem)),
+        const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -1195,7 +1202,7 @@ void main() {
       );
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _novelItem)),
+        const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -1233,7 +1240,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           navigatorObservers: [observer],
-          home: const DetailScreen(item: _animeItem),
+          home: const DetailScreen(item: _animeItem, initialTab: 1),
         ),
       );
       await tester.pump(); // let the cubit's load() resolve
@@ -1281,7 +1288,7 @@ void main() {
     sl.registerSingleton<SourceRepository>(repository);
     sl.registerSingleton<CatalogueRepository>(repository);
     await tester.pumpWidget(
-      const MaterialApp(home: DetailScreen(item: _animeItem)),
+      const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 699));
@@ -1337,7 +1344,7 @@ void main() {
       sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _novelItem)),
+        const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -1387,7 +1394,7 @@ void main() {
     sl.registerSingleton<ReadStore>(store);
 
     await tester.pumpWidget(
-      const MaterialApp(home: DetailScreen(item: _novelItem)),
+      const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
     );
     await tester.pump();
     await tester.pump();
@@ -1424,7 +1431,7 @@ void main() {
     sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
     await tester.pumpWidget(
-      const MaterialApp(home: DetailScreen(item: _novelItem)),
+      const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
     );
     await tester.pump();
     await tester.pump();
@@ -1456,7 +1463,7 @@ void main() {
       sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _novelItem)),
+        const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -1490,7 +1497,7 @@ void main() {
       );
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _novelItem)),
+        const MaterialApp(home: DetailScreen(item: _novelItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();
@@ -1526,7 +1533,7 @@ void main() {
       sl.registerSingleton<CatalogueRepository>(sl<SourceRepository>());
 
       await tester.pumpWidget(
-        const MaterialApp(home: DetailScreen(item: _animeItem)),
+        const MaterialApp(home: DetailScreen(item: _animeItem, initialTab: 1)),
       );
       await tester.pump();
       await tester.pump();

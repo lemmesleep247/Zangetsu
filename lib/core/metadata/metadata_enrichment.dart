@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:dio/dio.dart';
 
 import '../anilist/anilist_api.dart';
@@ -10,6 +11,7 @@ import '../models/provider_info.dart';
 import '../zmode/metadata_provider_prefs.dart';
 import '../di/injector.dart';
 import 'episode_metadata_service.dart';
+import 'title_badges.dart';
 import '../zmode/season_chain.dart';
 
 /// Fetches Cast + Relations for a title from a metadata API — AniList for anime
@@ -157,7 +159,37 @@ class MetadataEnrichment {
   /// user's provider where that provider has them — see [_providerRelations].
   Future<({List<CastMember> cast, List<MediaRelation> relations})> fetch(
     MediaDetail d,
-  ) async {
+  ) {
+    // A title opened again — or opened twice at once — reuses the answer.
+    // Only a non-empty answer is kept, so a failed or empty fetch is retried.
+    final key =
+        '${d.type.name}|${d.malId}|${d.tmdbId}|${d.tmdbIsTv}|${d.title.toLowerCase()}';
+    final hit = _extrasCache.remove(key);
+    if (hit != null) {
+      _extrasCache[key] = hit; // most recently used goes last
+      return hit;
+    }
+    final run = _fetchUncached(d);
+    _extrasCache[key] = run;
+    if (_extrasCache.length > _extrasCacheMax) {
+      _extrasCache.remove(_extrasCache.keys.first);
+    }
+    unawaited(
+      run.then((r) {
+        if (r.cast.isEmpty && r.relations.isEmpty) _extrasCache.remove(key);
+      }, onError: (_) => _extrasCache.remove(key)),
+    );
+    return run;
+  }
+
+  /// Insertion-ordered, so the first key is the least recently used.
+  final Map<String,
+          Future<({List<CastMember> cast, List<MediaRelation> relations})>>
+      _extrasCache = {};
+  static const _extrasCacheMax = 40;
+
+  Future<({List<CastMember> cast, List<MediaRelation> relations})>
+      _fetchUncached(MediaDetail d) async {
     // Both in flight at once: the overlay is a second network round trip and
     // there is no reason to pay for it in series.
     final baseCall = _base(d);
@@ -444,6 +476,107 @@ class MetadataEnrichment {
   /// Lowercase, strip non-alphanumerics — for tolerant title comparison.
   String _norm(String s) =>
       s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+
+  /// The age tag and the IMDb score for [d], when they can be found.
+  ///
+  /// The age tag comes from TMDB (needs a TMDB id: movies and series). The IMDb
+  /// score comes from the public Cinemeta service, keyed by the title's IMDb id
+  /// — taken from [d] when it has one, otherwise from TMDB in the same request
+  /// as the age tag. Anime with no such ids simply get neither. Best-effort:
+  /// any failure just leaves that part out. Answers are kept for the session.
+  Future<TitleBadges> badges(MediaDetail d) {
+    final key = '${d.tmdbId}|${d.imdbId}|${d.tmdbIsTv}|${d.malId}|${d.type.name}';
+    final hit = _badgesCache.remove(key);
+    if (hit != null) {
+      _badgesCache[key] = hit;
+      return hit;
+    }
+    final run = _badgesUncached(d);
+    _badgesCache[key] = run;
+    if (_badgesCache.length > 60) _badgesCache.remove(_badgesCache.keys.first);
+    unawaited(
+      run.then((b) {
+        if (b.isEmpty) _badgesCache.remove(key);
+      }, onError: (_) => _badgesCache.remove(key)),
+    );
+    return run;
+  }
+
+  final Map<String, Future<TitleBadges>> _badgesCache = {};
+
+  Future<TitleBadges> _badgesUncached(MediaDetail d) async {
+    var isTv = d.tmdbIsTv;
+    int? tmdbId = d.tmdbId;
+    String? age;
+    var directors = <String>[];
+    var writers = <String>[];
+    var creators = <String>[];
+    String? imdbId = (d.imdbId ?? '').startsWith('tt') ? d.imdbId : null;
+
+    // An anime's staff, asked beside everything else — it needs none of it.
+    final staffRun = (d.type == ProviderType.anime && d.malId != null)
+        ? _anilist.animeStaff(d.malId!).then(anilistStaffCredits)
+        : null;
+
+    // Only an IMDb id (what many sources give): TMDB can find the title from it.
+    if (tmdbId == null && imdbId != null) {
+      final found = tmdbFromFind(
+        await _get('$_tmdbBase/find/$imdbId', {'external_source': 'imdb_id'}),
+      );
+      if (found != null) {
+        tmdbId = found.id;
+        isTv = found.isTv;
+      }
+    }
+    var tmdbDirectors = <String>[];
+    var tmdbWriters = <String>[];
+    if (tmdbId != null) {
+      final kind = isTv ? 'tv' : 'movie';
+      final tmdb = await _get('$_tmdbBase/$kind/$tmdbId', {
+        'append_to_response': isTv
+            ? 'content_ratings,external_ids'
+            : 'release_dates,external_ids,credits',
+      });
+      if (tmdb != null) {
+        age = certificationFrom(tmdb, isTv: isTv);
+        imdbId ??= imdbIdFrom(tmdb);
+        if (isTv) {
+          creators = tmdbCreators(tmdb);
+        } else {
+          final crew = tmdbCrewCredits(tmdb);
+          tmdbDirectors = crew.directors;
+          tmdbWriters = crew.writers;
+        }
+      }
+    }
+    String? imdb;
+    if (imdbId != null) {
+      final meta = await _get(
+        'https://v3-cinemeta.strem.io/meta/${isTv ? 'series' : 'movie'}/$imdbId.json',
+      );
+      imdb = imdbRatingFrom(meta);
+      final c = cinemetaCredits(meta);
+      directors = c.directors;
+      writers = c.writers;
+    }
+    // Cinemeta first, then TMDB's crew, then (anime) AniList's staff.
+    if (directors.isEmpty) directors = tmdbDirectors;
+    if (writers.isEmpty) writers = tmdbWriters;
+    if (staffRun != null && (directors.isEmpty || writers.isEmpty)) {
+      try {
+        final staff = await staffRun;
+        if (directors.isEmpty) directors = staff.directors;
+        if (writers.isEmpty) writers = staff.writers;
+      } catch (_) {}
+    }
+    return TitleBadges(
+      ageRating: age,
+      imdbRating: imdb,
+      directors: directors,
+      writers: writers,
+      creators: creators,
+    );
+  }
 
   Future<Map<String, dynamic>?> _get(
     String url, [

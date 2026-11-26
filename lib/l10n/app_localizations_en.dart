@@ -3184,6 +3184,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get relations => 'Relations';
 
   @override
+  String get overview => 'Overview';
+
+  @override
+  String get director => 'Director';
+
+  @override
+  String get writer => 'Writer';
+
+  @override
   String get characters => 'Characters';
 
   @override

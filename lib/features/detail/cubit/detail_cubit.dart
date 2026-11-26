@@ -11,6 +11,7 @@ import '../../../core/logging/app_logger.dart';
 import '../../../core/lnreader/novel_cloudflare.dart';
 import '../../../core/metadata/episode_metadata_service.dart';
 import '../../../core/metadata/metadata_enrichment.dart';
+import '../../../core/metadata/title_badges.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/episode_title.dart';
 import '../../../core/models/media_detail.dart';
@@ -51,7 +52,12 @@ class DetailState extends Equatable {
     this.cloudflareUrl,
     this.episodesLoading = false,
     this.extrasLoading = false,
+    this.badges,
   });
+
+  /// The age tag and IMDb score for the Overview's top row. Null until found,
+  /// and for titles that have neither.
+  final TitleBadges? badges;
 
   final DetailStatus status;
   final MediaDetail? detail;
@@ -99,6 +105,7 @@ class DetailState extends Equatable {
     bool clearCloudflareUrl = false,
     bool? episodesLoading,
     bool? extrasLoading,
+    TitleBadges? badges,
   }) => DetailState(
     status: status ?? this.status,
     detail: detail ?? this.detail,
@@ -114,6 +121,7 @@ class DetailState extends Equatable {
         : (cloudflareUrl ?? this.cloudflareUrl),
     episodesLoading: episodesLoading ?? this.episodesLoading,
     extrasLoading: extrasLoading ?? this.extrasLoading,
+    badges: badges ?? this.badges,
   );
 
   @override
@@ -129,6 +137,7 @@ class DetailState extends Equatable {
     relations,
     seasons,
     cloudflareUrl,
+    badges,
   ];
 }
 
@@ -616,6 +625,33 @@ class DetailCubit extends Cubit<DetailState> {
       } catch (_) {/* stays a movie */}
     }
 
+    // Cast and Relations need none of the episode data below, so they start
+    // NOW and run beside it instead of waiting for it. Each result is shown
+    // the moment it lands (see _fetchExtras).
+    //
+    // Cast the source already carries (CloudStream actors/recommendations)
+    // is painted straight away; the richer AniList/TMDB answer replaces it
+    // when it arrives.
+    if (!force &&
+        state.cast.isEmpty &&
+        state.relations.isEmpty &&
+        (detail.castMembers.isNotEmpty || detail.relations.isNotEmpty)) {
+      emit(
+        state.copyWith(cast: detail.castMembers, relations: detail.relations),
+      );
+    }
+    final wantsExtras = d.malId != null ||
+        d.tmdbId != null ||
+        d.type == ProviderType.anime ||
+        d.type == ProviderType.manga ||
+        d.type == ProviderType.novel;
+    final Future<bool>? extrasRun = wantsExtras ? _fetchExtras(d) : null;
+    // The age tag and IMDb score: ids only, no episode data, so they start now
+    // too. Movies and series only; reading titles have neither.
+    if (_wantsBadges(d)) {
+      unawaited(_fetchBadges(d));
+    }
+
     // Fill in per-episode descriptions (AniZip for anime, TMDB season for a
     // movie-source TV series). Best-effort — a miss leaves the row on its date.
     if (d.episodes.isNotEmpty) {
@@ -648,23 +684,9 @@ class DetailCubit extends Cubit<DetailState> {
     // all above (the TMDB step is movie-only, the MAL step anime-only), so
     // without them named here the gate was false three ways and Cast/Relations
     // never loaded for a reading title.
-    if (d.malId != null ||
-        d.tmdbId != null ||
-        d.type == ProviderType.anime ||
-        d.type == ProviderType.manga ||
-        d.type == ProviderType.novel) {
-      try {
-        final extras = await sl<MetadataEnrichment>().fetch(d);
-        if (isClosed) return;
-        if (extras.cast.isNotEmpty || extras.relations.isNotEmpty) {
-          emit(state.copyWith(cast: extras.cast, relations: extras.relations));
-          // After the tab has something to show, not before: the walk costs a
-          // request per hop and nobody is waiting on it.
-          unawaited(_loadSeasons(d));
-          return;
-        }
-      } catch (_) {/* fall through to source-supplied extras */}
-    }
+    //
+    // Started earlier (extrasRun), so this only has to wait for what is left.
+    if (extrasRun != null && await extrasRun) return;
     // Fall back to Cast/Relations the source supplied directly (e.g.
     // CloudStream's actors/recommendations) — so the tabs fill even without ids.
     if (isClosed) return;
@@ -674,6 +696,81 @@ class DetailCubit extends Cubit<DetailState> {
       );
     }
     _log('enrich done ${sw.elapsedMilliseconds}ms');
+  }
+
+  /// Fetches Cast + Relations and shows them as soon as they arrive.
+  ///
+  /// Returns true when it had something to show, so the caller knows not to
+  /// fall back to source-supplied extras. Never throws.
+  Future<bool> _fetchExtras(MediaDetail d) async {
+    try {
+      final extras = await sl<MetadataEnrichment>().fetch(d);
+      if (isClosed) return false;
+      if (extras.cast.isEmpty && extras.relations.isEmpty) return false;
+      emit(state.copyWith(cast: extras.cast, relations: extras.relations));
+      // After the tab has something to show, not before: the walk costs a
+      // request per hop and nobody is waiting on it.
+      unawaited(_loadSeasons(d));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _extrasRetried = false;
+
+  /// One more try at the cast and relations, for when the first one came back
+  /// empty (the services refuse or time out now and then). Asked for by the
+  /// Overview once it has finished loading with nothing to show; does nothing
+  /// if it has already tried again, or there is now something on screen.
+  Future<void> retryExtras() async {
+    final d = state.detail;
+    if (_extrasRetried ||
+        isClosed ||
+        d == null ||
+        state.cast.isNotEmpty ||
+        state.relations.isNotEmpty) {
+      return;
+    }
+    final wantsExtras =
+        d.malId != null ||
+        d.tmdbId != null ||
+        d.type == ProviderType.anime ||
+        d.type == ProviderType.manga ||
+        d.type == ProviderType.novel;
+    if (!wantsExtras) return;
+    _extrasRetried = true;
+    emit(state.copyWith(extrasLoading: true));
+    try {
+      await _fetchExtras(d);
+    } finally {
+      if (!isClosed) emit(state.copyWith(extrasLoading: false));
+    }
+  }
+
+  /// Whether there is anything to look up for the year/tag/credits row: movies,
+  /// series and anime with an id to ask by. Reading titles have none of it.
+  bool _wantsBadges(MediaDetail d) =>
+      d.type != ProviderType.manga &&
+      d.type != ProviderType.novel &&
+      (d.tmdbId != null ||
+          d.imdbId != null ||
+          (d.type == ProviderType.anime && d.malId != null));
+
+  /// Looks up the age tag, IMDb score and credits and shows them when they
+  /// arrive. Capped at a few seconds so a slow service never holds the page.
+  Future<void> _fetchBadges(MediaDetail d) async {
+    TitleBadges? found;
+    try {
+      found = await sl<MetadataEnrichment>().badges(d).timeout(
+        const Duration(seconds: 3),
+      );
+    } catch (_) {
+      // Nothing to show is fine.
+    }
+    if (isClosed) return;
+    if (found == null || found.isEmpty) return;
+    emit(state.copyWith(badges: found));
   }
 
   /// Walks the franchise so the Relations tab can show its seasons in order.

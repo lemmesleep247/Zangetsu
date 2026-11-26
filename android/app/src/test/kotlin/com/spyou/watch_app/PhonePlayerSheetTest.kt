@@ -96,6 +96,35 @@ class PhonePlayerSheetTest {
         } finally { controller.pause().stop().destroy() }
     }
 
+    @Test @Config(qualifiers = "port")
+    fun `delay control steps in quarter seconds, reports once, and flushes on close`() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        try {
+            val reported = mutableListOf<Int>()
+            val dialog = PhonePlayerSheet(controller.get())
+                .setDelayControl(0) { reported += it }.setTitle("Subtitle delay").show()
+            val root = dialog.window!!.decorView
+            fun buttons(): List<android.widget.ImageView> {
+                val found = mutableListOf<android.widget.ImageView>()
+                fun walk(v: android.view.View) {
+                    if (v is android.widget.ImageView && v.contentDescription != null) found += v
+                    if (v is android.view.ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
+                }
+                walk(root)
+                return found
+            }
+            val later = buttons().single { it.contentDescription == "Later" }
+            repeat(3) { later.performClick() }
+            // Three quick taps are one change, and nothing is sent yet.
+            assertTrue(reported.isEmpty())
+            assertTrue(texts(root).any { it.text == "+0.75s" })
+            // Closing the sheet sends the pending total instead of dropping it.
+            dialog.dismiss()
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            assertEquals(listOf(750), reported)
+        } finally { controller.pause().stop().destroy() }
+    }
+
     @Test @Config(qualifiers = "land")
     fun `long episode lists stay scrollable within the screen`() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()

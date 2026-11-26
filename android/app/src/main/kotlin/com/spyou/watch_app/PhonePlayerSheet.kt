@@ -54,6 +54,16 @@ internal class PhonePlayerSheet(context: Context) : AlertDialog.Builder(context,
         ColorStateList.valueOf(0x1AFFFFFF), null, shape(Color.WHITE, radius),
     )
 
+    private var flush: (() -> Unit)? = null
+
+    /** Also runs [flush] first, so a sheet with a pending change never loses it on close. */
+    override fun setOnDismissListener(listener: DialogInterface.OnDismissListener?): PhonePlayerSheet = apply {
+        super.setOnDismissListener { d ->
+            flush?.invoke()
+            listener?.onDismiss(d)
+        }
+    }
+
     override fun setTitle(title: CharSequence?): PhonePlayerSheet = apply { heading = title }
     override fun setTitle(titleId: Int): PhonePlayerSheet = setTitle(context.getText(titleId))
 
@@ -221,7 +231,10 @@ internal class PhonePlayerSheet(context: Context) : AlertDialog.Builder(context,
         fun close() { dialog?.dismiss() }
         // The columns take whatever the sheet has left after its footer, so the
         // sheet as a whole fits without a second, competing scroll.
-        val footerPx = if (footer.isEmpty()) 0 else dp(92)
+        val widthDp = context.resources.displayMetrics.run { widthPixels / density }.coerceAtMost(560f)
+        val footerColumns = if (widthDp >= 480) 5 else 3
+        val footerRows = (footer.size + footerColumns - 1) / footerColumns
+        val footerPx = if (footer.isEmpty()) 0 else footerRows * dp(84) + dp(20)
         val cap = (capPx(0.85f) - footerPx - dp(110)).coerceAtLeast(dp(96))
         val columns = LinearLayout(context)
         val sections = listOf(
@@ -256,23 +269,23 @@ internal class PhonePlayerSheet(context: Context) : AlertDialog.Builder(context,
         if (footer.isNotEmpty()) {
             content.addView(View(context).apply { setBackgroundColor(0x14FFFFFF) },
                 LinearLayout.LayoutParams(-1, dp(1)).apply { setMargins(dp(4), dp(10), dp(4), dp(6)) })
-            // Actions in one row, icon over label, so three fit side by side.
-            val actions = LinearLayout(context)
+            // Actions in a grid, icon over label, so several fit side by side.
+            val actions = GridLayout(context).apply { columnCount = footerColumns }
             for (row in footer) {
                 val action = LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
-                    minimumHeight = dp(64)
-                    setPadding(dp(4), dp(8), dp(4), dp(8))
-                    background = shape(Color.TRANSPARENT)
-                    foreground = ripple()
+                    minimumHeight = dp(68)
+                    setPadding(dp(4), dp(10), dp(4), dp(10))
+                    background = shape(0xFF20212A.toInt(), 16)
+                    foreground = ripple(16)
                     setOnClickListener { close(); row.onClick() }
                 }
                 row.icon?.let {
                     action.addView(ImageView(context).apply {
                         setImageResource(it)
-                        setColorFilter(secondary)
-                    }, LinearLayout.LayoutParams(dp(22), dp(22)))
+                        setColorFilter(Color.WHITE)
+                    }, LinearLayout.LayoutParams(dp(24), dp(24)))
                 }
                 action.addView(TextView(context).apply {
                     textSize = 12f
@@ -280,7 +293,11 @@ internal class PhonePlayerSheet(context: Context) : AlertDialog.Builder(context,
                     text = row.label
                     setTextColor(Color.WHITE)
                 }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4) })
-                actions.addView(action, LinearLayout.LayoutParams(0, -2, 1f))
+                actions.addView(action, GridLayout.LayoutParams().apply {
+                    width = 0
+                    columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                    setMargins(dp(4), dp(4), dp(4), dp(4))
+                })
             }
             content.addView(actions, LinearLayout.LayoutParams(-1, -2))
         }
@@ -288,6 +305,74 @@ internal class PhonePlayerSheet(context: Context) : AlertDialog.Builder(context,
         // scroller around them would fight for the same swipe.
         content.setPadding(dp(12), 0, dp(12), dp(12))
         setView(content)
+    }
+
+    /**
+     * The delay control, laid out like the MPV sheet's: a label, then − value +
+     * and a reset, in 0.25 s steps. [onChange] gets the new total after the
+     * viewer pauses for a moment, so a run of taps moves the subtitles once.
+     */
+    fun setDelayControl(initialMs: Int, onChange: (totalMs: Int) -> Unit): PhonePlayerSheet = apply {
+        var total = initialMs
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        var pending = false
+        val send = Runnable { pending = false; onChange(total) }
+        val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val value = TextView(context).apply {
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        val reset = ImageView(context).apply {
+            setImageResource(R.drawable.sheet_ic_reset)
+            setColorFilter(secondary)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            foreground = ripple(20)
+        }
+        fun show() {
+            val secs = String.format(java.util.Locale.US, "%.2f", total / 1000f)
+            value.text = if (total > 0) "+${secs}s" else "${secs}s"
+            value.setTextColor(if (total == 0) secondary else accent)
+            reset.alpha = if (total == 0) 0.35f else 1f
+        }
+        fun bump(delta: Int) {
+            total = (total + delta).coerceIn(-30000, 30000)
+            show()
+            pending = true
+            handler.removeCallbacks(send)
+            handler.postDelayed(send, 700)
+        }
+        fun stepButton(icon: Int, description: String, delta: Int) = ImageView(context).apply {
+            setImageResource(icon)
+            setColorFilter(Color.WHITE)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = shape(0xFF20212A.toInt(), 20)
+            foreground = ripple(20)
+            contentDescription = description
+            setOnClickListener { bump(delta) }
+        }
+        reset.setOnClickListener { if (total != 0) bump(-total) }
+        val row = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
+        row.addView(TextView(context).apply {
+            textSize = 14f
+            text = "Delay"
+            setTextColor(Color.WHITE)
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
+        row.addView(stepButton(R.drawable.sheet_ic_minus, "Earlier", -250), LinearLayout.LayoutParams(dp(40), dp(40)))
+        row.addView(value, LinearLayout.LayoutParams(dp(76), -2))
+        row.addView(stepButton(R.drawable.sheet_ic_plus, "Later", 250), LinearLayout.LayoutParams(dp(40), dp(40)))
+        row.addView(reset, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginStart = dp(4) })
+        content.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        content.addView(TextView(context).apply {
+            textSize = 12f
+            setTextColor(secondary)
+            text = "Later (+) if the words come too early, earlier (-) if they come too late."
+        }, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(8), dp(12), dp(8), dp(4)) })
+        show()
+        // Anything still waiting goes through, so closing the sheet never drops a change.
+        flush = { if (pending) { handler.removeCallbacks(send); send.run() } }
+        setOnDismissListener(null)
+        scroll(content)
     }
 
     override fun create(): AlertDialog {

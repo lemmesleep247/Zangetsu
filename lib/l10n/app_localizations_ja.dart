@@ -3117,6 +3117,15 @@ class AppLocalizationsJa extends AppLocalizations {
   String get relations => '関係';
 
   @override
+  String get overview => 'Overview';
+
+  @override
+  String get director => 'Director';
+
+  @override
+  String get writer => 'Writer';
+
+  @override
   String get characters => 'キャラクター';
 
   @override

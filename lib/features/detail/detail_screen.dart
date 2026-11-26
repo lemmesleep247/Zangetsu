@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -6,6 +7,7 @@ import 'package:cue/cue.dart';
 import 'package:flutter/cupertino.dart' show CupertinoPicker;
 import 'package:flutter/foundation.dart'
     show ValueListenable, defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -18,6 +20,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/zmode/season_chain.dart';
 import '../../core/zmode/metadata_provider_prefs.dart';
 import '../../core/ui/poster_card.dart';
+import '../../core/metadata/title_badges.dart';
+import 'letterbox_detector.dart';
 import '../../core/ui/detail_prefs.dart';
 import '../../core/ui/poster_palette.dart';
 import '../../core/ui/mobile_hero_art.dart';
@@ -150,7 +154,10 @@ part 'detail_skeleton.dart';
 
 part 'detail_screen_tv.dart';
 
-Future<void> _changeEpisodeVersion(BuildContext context, String category) async {
+Future<void> _changeEpisodeVersion(
+  BuildContext context,
+  String category,
+) async {
   final switched = await context.read<DetailCubit>().setCategory(category);
   if (!switched && context.mounted) {
     showAppToast(context, context.l10n.somethingWentWrong);
@@ -389,8 +396,16 @@ SearchScreen detailTitleSearchScreen({
 );
 
 class DetailScreen extends StatelessWidget {
-  const DetailScreen({super.key, required this.item, this.prefer});
+  const DetailScreen({
+    super.key,
+    required this.item,
+    this.prefer,
+    this.initialTab = 0,
+  });
   final MediaItem item;
+
+  /// Which page opens first: 0 Overview, 1 Episodes (or Chapters), 2 Comments.
+  final int initialTab;
 
   /// Read this title from a specific metadata catalogue. Set when it was
   /// opened from a tracker that has one, so an AniList library entry shows
@@ -418,7 +433,7 @@ class DetailScreen extends StatelessWidget {
         // label agree instead of one naming AniList over MAL's data.
         prefer: prefer ?? _preferFromName(item.savedFrom),
       )..load(),
-      child: _DetailView(item: item, prefer: prefer),
+      child: _DetailView(item: item, prefer: prefer, initialTab: initialTab),
     );
   }
 }
@@ -427,22 +442,24 @@ class _CueDetailRoute extends PageRouteBuilder<void>
     with CueModalRouteMixin<void> {
   _CueDetailRoute({required super.pageBuilder})
     : super(
-        transitionDuration: const Duration(milliseconds: 340),
-        reverseTransitionDuration: const Duration(milliseconds: 260),
-        transitionsBuilder: (_, animation, _, child) => SlideTransition(
-          position: Tween(
-            begin: const Offset(1, 0),
-            end: Offset.zero,
-          ).animate(animation),
-          child: child,
-        ),
+        transitionDuration: const Duration(milliseconds: 350),
+        reverseTransitionDuration: const Duration(milliseconds: 220),
+        // A fade, not a slide: the page eases in over 350ms on a long soft
+        // curve and leaves in 220ms. The curve is applied by the motion below,
+        // so the animation value is already shaped when it reaches here.
+        transitionsBuilder: (_, animation, _, child) =>
+            FadeTransition(opacity: animation, child: child),
       );
 
   @override
-  CueMotion get motion => const Spring.smooth();
+  CueMotion get motion => const CueMotion.curved(
+    Duration(milliseconds: 350),
+    curve: Cubic(0.5, 0, 0.14, 1),
+  );
 
   @override
-  CueMotion? get reverseMotion => const Spring.snappy();
+  CueMotion? get reverseMotion =>
+      const CueMotion.easeIn(Duration(milliseconds: 220));
 
   @override
   AnimationStatusListener? get onAnimationStatusChanged => null;
@@ -460,8 +477,9 @@ class _CueDetailRoute extends PageRouteBuilder<void>
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _DetailView extends StatefulWidget {
-  const _DetailView({required this.item, this.prefer});
+  const _DetailView({required this.item, this.prefer, this.initialTab = 0});
   final MediaItem item;
+  final int initialTab;
 
   /// The catalogue this title was opened from, so the name matches the data.
   final PreferredProvider? prefer;
@@ -471,8 +489,12 @@ class _DetailView extends StatefulWidget {
 }
 
 class _DetailViewState extends State<_DetailView>
-    with SingleTickerProviderStateMixin {
-  static const double _expandedHeight = 320;
+    with TickerProviderStateMixin {
+  /// Banner height: tall, scaling with the screen width (about 490px on a
+  /// typical phone). Set from the screen size each time the page builds.
+  double _heroHeight = 320;
+  static double _heroFor(BuildContext context) =>
+      (MediaQuery.sizeOf(context).width * 1.25).clamp(380.0, 560.0);
   bool _showAppBarTitle = false;
   bool _hasEntered = false;
   Animation<double>? _routeAnimation;
@@ -510,15 +532,21 @@ class _DetailViewState extends State<_DetailView>
 
   Timer? _prefetchTimer;
 
-  // Filler episode numbers (from Jikan by MAL id), for the "Filler" badge in the
+  // Filler episode numbers (from Tenrai by MAL id), for the "Filler" badge in the
   // episode list. Fetched once per malId; empty for non-anime / unlisted shows.
   Set<int> _fillerEps = const {};
   int? _fillerForMal;
   void _ensureFiller(int? malId) {
-    if (malId == null || malId == _fillerForMal) return;
+    if (malId == _fillerForMal) return;
     _fillerForMal = malId;
+    _fillerEps = malId == null
+        ? const {}
+        : FillerService.instance.peekCache(malId) ?? const {};
+    if (malId == null) return;
     FillerService.instance.fillerEpisodes(malId).then((s) {
-      if (mounted && s.isNotEmpty) setState(() => _fillerEps = s);
+      if (mounted && _fillerForMal == malId && s.isNotEmpty) {
+        setState(() => _fillerEps = s);
+      }
     });
   }
 
@@ -528,11 +556,44 @@ class _DetailViewState extends State<_DetailView>
   // you scrolled deeper into the episode list. NestedScrollView.controller drives
   // the OUTER viewport only, so its offset stays past the threshold once the hero
   // has collapsed — the title stays visible no matter how far the body scrolls.
+  /// How far the page has been pulled down past its top, in px (0 at rest).
+  /// The banner zooms with it, then eases back when the finger lifts.
+  final ValueNotifier<double> _pull = ValueNotifier<double>(0);
+  double _pullFrom = 0;
+  late final AnimationController _pullBack =
+      AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 280),
+      )..addListener(() {
+        _pull.value =
+            _pullFrom * (1 - Curves.easeOutCubic.transform(_pullBack.value));
+      });
+
+  static const double _maxPull = 160;
+
+  bool _onScrollNotification(ScrollNotification n) {
+    if (n.metrics.axis != Axis.vertical) return false;
+    if (n is OverscrollNotification &&
+        n.overscroll < 0 &&
+        n.dragDetails != null) {
+      // Pulling down while already at the top: the page does not move, the
+      // banner grows instead. Halved, so it feels like pulling on rubber.
+      _pullBack.stop();
+      _pull.value = (_pull.value - n.overscroll * 0.55).clamp(0, _maxPull);
+    } else if (n is ScrollEndNotification && _pull.value > 0) {
+      _pullFrom = _pull.value;
+      _pullBack.forward(from: 0);
+    }
+    return false;
+  }
+
   late final ScrollController _scrollController = ScrollController()
     ..addListener(_onScroll);
 
   late final TabController _tabController = TabController(
-    length: 4,
+    animationDuration: Duration.zero,
+    initialIndex: widget.initialTab.clamp(0, 2),
+    length: 3,
     vsync: this,
   );
 
@@ -657,6 +718,7 @@ class _DetailViewState extends State<_DetailView>
   /// one has actually resolved — and back to text if it fails to load).
   Widget _headerTitleText(String title) => Text(
     title,
+    textAlign: TextAlign.center,
     style: AppText.largeTitle.copyWith(fontSize: 28),
     maxLines: 2,
     overflow: TextOverflow.ellipsis,
@@ -721,6 +783,8 @@ class _DetailViewState extends State<_DetailView>
     _prefetchTimer?.cancel();
     // Back to generic "Browsing" when leaving the detail.
     if (sl.isRegistered<DiscordRpc>()) sl<DiscordRpc>().setBrowsing();
+    _pullBack.dispose();
+    _pull.dispose();
     _scrollController.dispose();
     _tint.removeListener(_onTintChanged);
     ThemeController.revision.removeListener(_onThemeRevision);
@@ -776,27 +840,9 @@ class _DetailViewState extends State<_DetailView>
   void _onScroll() {
     if (!_scrollController.hasClients) return;
     final shouldShow =
-        _scrollController.offset > (_expandedHeight - kToolbarHeight - 24);
+        _scrollController.offset > (_heroHeight - kToolbarHeight - 24);
     if (shouldShow != _showAppBarTitle) {
       setState(() => _showAppBarTitle = shouldShow);
-    }
-  }
-
-  /// Switch to [index] AND collapse the header so the tab's content is actually
-  /// in view — otherwise tapping "… more"/"Read more" silently changes a tab
-  /// that's still below the fold (feels like nothing happened). Animates both
-  /// for a smooth transition into the Cast / Details tab.
-  void _revealTab(int index) {
-    _tabController.animateTo(index);
-    if (_scrollController.hasClients) {
-      final target = _scrollController.position.maxScrollExtent;
-      if (_scrollController.offset < target - 1) {
-        _scrollController.animateTo(
-          target,
-          duration: const Duration(milliseconds: 380),
-          curve: Curves.easeOutCubic,
-        );
-      }
     }
   }
 
@@ -2251,11 +2297,12 @@ class _DetailViewState extends State<_DetailView>
             : null,
       );
     }
+    _heroHeight = _heroFor(context);
     if (!_hasEntered) {
-      return _DetailOpeningPreview(
-        item: widget.item,
-        heroHeight: _expandedHeight,
-      );
+      if (context.read<DetailCubit>().state.status == DetailStatus.loading) {
+        return const _DetailLoading();
+      }
+      return _DetailOpeningPreview(item: widget.item, heroHeight: _heroHeight);
     }
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -2274,100 +2321,93 @@ class _DetailViewState extends State<_DetailView>
             type: MaterialType.transparency,
             child: BlocBuilder<DetailCubit, DetailState>(
               builder: (context, state) {
-                if (state.status == DetailStatus.loading) {
-                  // The row that was tapped already carried a title, a cover and a
-                  // year, and a full-screen skeleton throws all of that away to
-                  // animate a blank page. Frames prove the app is NOT stuck here -
-                  // 18ms median, 90th 23ms, while tapping through screens - it is
-                  // responsive and simply showing nothing new, because the episodes
-                  // are a source resolve that has not come back yet. The perceived
-                  // hang is the empty screen, not the wait.
-                  //
-                  // So paint what we already know, immediately, and let the episode
-                  // tab carry its own loading skeleton for the part genuinely still
-                  // in flight. A viewer who backs out before the resolve returns sees
-                  // the title they tapped either way, and nobody stares at a
-                  // placeholder for a source sweep.
-                  final partial = _detailFromItem(widget.item);
-                  if (partial != null) {
-                    return _buildBody(
-                      context,
-                      state.copyWith(
-                        status: DetailStatus.success,
-                        detail: partial,
-                        // Nothing is known yet, so the episode tab shows its skeleton
-                        // rather than an empty list reading as "this source has no
-                        // episodes".
-                        episodesLoading: true,
-                      ),
-                      partial,
-                      sourceMetadataReady: false,
+                // Loading and loaded are two different screens; crossfade
+                // between them so the page never blinks from one to the other.
+                // Everything after loading shares one key, so ordinary updates
+                // (cast arriving, a source switch) do not replay the fade.
+                Widget phase() {
+                  if (state.status == DetailStatus.loading) {
+                    // Nothing is shown until there is something real to show:
+                    // the whole screen is the page colour and one centred loader.
+                    return const _DetailLoading();
+                  }
+                  if (state.cloudflareUrl != null) {
+                    return _DetailCloudflareBlocked(
+                      url: state.cloudflareUrl!,
+                      isMangayomi:
+                          widget.item.sourceId.startsWith('mg:') ||
+                          (state.detail?.sourceId.startsWith('mg:') ?? false),
                     );
                   }
-                  return const _DetailSkeleton(heroHeight: _expandedHeight);
-                }
-                if (state.cloudflareUrl != null) {
-                  return _DetailCloudflareBlocked(
-                    url: state.cloudflareUrl!,
-                    isMangayomi:
-                        widget.item.sourceId.startsWith('mg:') ||
-                        (state.detail?.sourceId.startsWith('mg:') ?? false),
-                  );
-                }
-                if (state.status == DetailStatus.error ||
-                    state.detail == null) {
-                  // The row you tapped already carried a title and a cover, so a
-                  // failed fetch does not have to blank the page — keep what we
-                  // have and say what is missing over it. A rate limit especially:
-                  // it passes on its own, and the wait is the useful part.
-                  final fallback = _detailFromItem(widget.item);
-                  if (fallback != null) {
-                    return Stack(
-                      children: [
-                        _buildBody(
-                          context,
-                          state,
-                          fallback,
-                          sourceMetadataReady: false,
-                        ),
-                        Positioned(
-                          left: 0,
-                          right: 0,
-                          bottom: 0,
-                          child: _LoadFailureBanner(
-                            service: _sourceLabel(
-                              widget.item.sourceId,
-                              url: widget.item.url,
-                              savedFrom: widget.item.savedFrom,
-                            ),
-                            // Same distinction Home draws: a metadata catalogue and
-                            // an installed source fail alike but read differently.
-                            isMetadataProvider:
-                                widget.item.sourceId == ZmodeIds.sourceId,
-                            error: state.error,
+                  if (state.status == DetailStatus.error ||
+                      state.detail == null) {
+                    // The row you tapped already carried a title and a cover, so a
+                    // failed fetch does not have to blank the page — keep what we
+                    // have and say what is missing over it. A rate limit especially:
+                    // it passes on its own, and the wait is the useful part.
+                    final fallback = _detailFromItem(widget.item);
+                    if (fallback != null) {
+                      return Stack(
+                        children: [
+                          _buildBody(
+                            context,
+                            state,
+                            fallback,
+                            sourceMetadataReady: false,
                           ),
-                        ),
-                      ],
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            child: _LoadFailureBanner(
+                              service: _sourceLabel(
+                                widget.item.sourceId,
+                                url: widget.item.url,
+                                savedFrom: widget.item.savedFrom,
+                              ),
+                              // Same distinction Home draws: a metadata catalogue and
+                              // an installed source fail alike but read differently.
+                              isMetadataProvider:
+                                  widget.item.sourceId == ZmodeIds.sourceId,
+                              error: state.error,
+                            ),
+                          ),
+                        ],
+                      );
+                    }
+                    // Offline is not the title failing: saying "failed to load this
+                    // title" over a dropped connection sends people hunting a
+                    // problem that isn't there.
+                    final offline = state.error == 'offline';
+                    return EmptyState(
+                      icon: offline
+                          ? Icons.wifi_off_rounded
+                          : Icons.error_outline,
+                      message: offline
+                          ? '${context.l10n.offlineTitle}\n${context.l10n.offlineBody}'
+                          : _limitSeconds(state.error) != null
+                          ? context.l10n.providerNeedsBreatherBody(
+                              _limitSeconds(state.error)!,
+                            )
+                          : context.l10n.failedToLoadThisTitle,
                     );
                   }
-                  // Offline is not the title failing: saying "failed to load this
-                  // title" over a dropped connection sends people hunting a
-                  // problem that isn't there.
-                  final offline = state.error == 'offline';
-                  return EmptyState(
-                    icon: offline
-                        ? Icons.wifi_off_rounded
-                        : Icons.error_outline,
-                    message: offline
-                        ? '${context.l10n.offlineTitle}\n${context.l10n.offlineBody}'
-                        : _limitSeconds(state.error) != null
-                        ? context.l10n.providerNeedsBreatherBody(
-                            _limitSeconds(state.error)!,
-                          )
-                        : context.l10n.failedToLoadThisTitle,
-                  );
+                  return _buildBody(context, state, state.detail!);
                 }
-                return _buildBody(context, state, state.detail!);
+
+                return AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  layoutBuilder: (current, previous) => Stack(
+                    fit: StackFit.expand,
+                    children: [...previous, ?current],
+                  ),
+                  child: KeyedSubtree(
+                    key: ValueKey(state.status == DetailStatus.loading),
+                    child: phase(),
+                  ),
+                );
               },
             ),
           ),
@@ -2524,38 +2564,8 @@ class _DetailViewState extends State<_DetailView>
       episodesBySeason[1] = eps;
     }
 
-    // ── Status label (used by the meta line and Details tab) ────────────────
+    // ── Status label (used by the Details tab) ────────────────
     final statusStr = statusLabel(detail.status);
-
-    // ── Netflix-style meta line: "2010 · 10 Seasons · Completed" ────────────
-    // Join only what we actually HAVE with " · " (no faked rating/HD/CC).
-    // Seasons when multi-season, else episode count.
-    //
-    // Three items, and that is the whole line. It is ONE line with an
-    // ellipsis, so a fourth does not add anything — it pushes the end off the
-    // edge and shows less than three did. Score, format and per-episode
-    // duration each got a turn here and each cost more than it paid; they
-    // live in the Details tab now, where there is room to read them.
-    final metaParts = <String>[];
-    if ((detail.year ?? '').isNotEmpty) metaParts.add(detail.year!);
-    // A film has no episode count to fill the middle slot, so its run time
-    // takes it — there it IS the thing worth knowing before pressing play.
-    if (!isReading &&
-        (detail.isFilm || eps.length <= 1) &&
-        (detail.durationMins ?? 0) > 0) {
-      metaParts.add('${detail.durationMins}m');
-    }
-    if (!detail.isFilm && hasMultipleSeasons) {
-      metaParts.add(context.l10n.seasonCount(seasonSet.length));
-    } else if (!detail.isFilm && eps.isNotEmpty) {
-      metaParts.add(
-        isReading
-            ? context.l10n.chapterCount(eps.length)
-            : context.l10n.episodeCount(eps.length),
-      );
-    }
-    if (statusStr.isNotEmpty) metaParts.add(statusStr);
-    final metaLine = metaParts.join('  ·  ');
 
     // ── Download button label: "Download S{season}:E{n}" when we can derive
     // the first episode of the current season, else a plain "Download". ──────
@@ -2568,22 +2578,6 @@ class _DetailViewState extends State<_DetailView>
             currentSeason,
           );
 
-    // ── Starring / Creators (Genres fallback) muted lines ───────────────────
-    // Prefer enriched cast (AniList/TMDB) when available, else the provider's.
-    final castNames = state.cast.isNotEmpty
-        ? state.cast.map((c) => c.name).toList()
-        : detail.cast;
-    final starring = castNames.isNotEmpty ? castNames.take(3).join(', ') : null;
-    final starringMore = castNames.length > 3;
-    final creators = detail.studios.isNotEmpty
-        ? detail.studios.join(', ')
-        : null;
-    // For anime (or anything without cast) surface Genres instead of an empty
-    // Starring line — never show an empty label.
-    final genresLine = (starring == null && detail.genres.isNotEmpty)
-        ? detail.genres.take(4).join(', ')
-        : null;
-
     // Friendly provider name + its origin repo, so the user can tell which repo
     // a source came from. JS providers live in the registry; CloudStream sources
     // live in the CS manager — without the CS lookup this fell back to the raw
@@ -2595,558 +2589,556 @@ class _DetailViewState extends State<_DetailView>
       savedFrom: item.savedFrom,
     );
 
-    return NestedScrollView(
-      controller: _scrollController,
-      headerSliverBuilder: (context, _) => [
-        // ── 1. Hero: backdrop + overlapping poster + status/total ──────────
-        SliverAppBar(
-          expandedHeight: _expandedHeight,
-          pinned: true,
-          // iOS-style chip with its own background (no top fade needed).
-          // Padded to sit 14px off the edge, mirroring the top-right
-          // trailer controls.
-          leadingWidth: 62,
-          leading: const Padding(
-            padding: EdgeInsets.only(left: 14),
-            child: _DetailBackButton(),
-          ),
-          // Opaque while adaptive colour is on, painted in the same wash as the
-          // body, so the pinned bar hides scrolled content instead of letting
-          // it show through (a transparent bar read as an unfinished page).
-          // Flat theme bg otherwise, exactly as before.
-          backgroundColor: ThemeController.adaptiveColour
-              ? (_tint.value ?? AppColors.bg)
-              : AppColors.bg,
-          surfaceTintColor: Colors.transparent,
-          shadowColor: Colors.transparent,
-          centerTitle: false,
-          titleSpacing: 0,
-          // PRESERVED EFFECT: title fades in once the hero scrolls past.
-          title: AnimatedOpacity(
-            opacity: _showAppBarTitle ? 1.0 : 0.0,
-            duration: const Duration(milliseconds: 180),
+    // The title (or logo) and up to three genres. Drawn ON the banner, over
+    // its fade, so the picture runs under the title.
+    final Widget titleBlock = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        // Tapping the title opens the search popup (Cue pop-in):
+        // pre-filled query, "Search" or "Search all sources".
+        GestureDetector(
+          onTap: () => _onTitleTap(detail.title),
+          // Official title logo when the toggle resolved one —
+          // grows in smoothly instead of shoving Play down.
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 250),
             curve: Curves.easeOut,
-            // Mini title logo in the collapsed bar; plain text until (and
-            // unless) one resolves.
+            alignment: Alignment.topCenter,
             child: _logoUrl != null
-                ? Align(
-                    alignment: Alignment.centerLeft,
+                // Compact natural-size box (never full-width), centred.
+                ? ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      maxHeight: 72,
+                      maxWidth: 260,
+                    ),
                     child: CachedNetworkImage(
                       imageUrl: logoUrl!,
-                      height: 24,
                       fit: BoxFit.contain,
-                      alignment: Alignment.centerLeft,
+                      alignment: Alignment.center,
                       fadeInDuration: const Duration(milliseconds: 250),
-                      errorWidget: (_, _, _) => _barTitleText(detail.title),
+                      errorWidget: (_, _, _) => _headerTitleText(detail.title),
                       errorListener: widget.item.sourceId == stremioSourceId
                           ? (_) => _loadLogo(failedUrl: logoUrl)
                           : null,
                     ),
                   )
-                : _barTitleText(detail.title),
-          ),
-          flexibleSpace: FlexibleSpaceBar(
-            collapseMode: CollapseMode.parallax,
-            background: RepaintBoundary(
-              child: _Hero(
-                coverUrl: coverUrl,
-                imageDecodeWidth: mobileHeroDecodeWidth(item.sourceId, 800),
-                coverHeaders: coverHeaders,
-                hasCover: hasCover,
-                tint: ThemeController.adaptiveColour ? _tint : null,
-                trailer: _trailerFuture,
-                // Pause the trailer once the hero has scrolled past (reuses
-                // the same signal that fades in the app-bar title).
-                collapsed: _showAppBarTitle,
-                onTapFullscreen: _openTrailer,
-              ),
-            ),
+                : _headerTitleText(detail.title),
           ),
         ),
+        // Up to three genres under the title, as one quiet line.
+        AnimatedSize(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+          alignment: Alignment.topCenter,
+          child: detail.genres.isEmpty
+              ? const SizedBox.shrink()
+              : Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    detail.genres.take(3).join(' \u2022 '),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.body.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+        ),
+        // Quality / 18+ tags, when there are any. No year line.
+        if ((item.quality ?? '').trim().isNotEmpty || detail.isAdult)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if ((item.quality ?? '').trim().isNotEmpty)
+                  _MetaBadge(item.quality!.trim().toUpperCase()),
+                if ((item.quality ?? '').trim().isNotEmpty && detail.isAdult)
+                  const SizedBox(width: 8),
+                if (detail.isAdult) const _MetaBadge('18+'),
+              ],
+            ),
+          ),
+      ],
+    );
 
-        // ── 2. Title + meta line (Netflix header) ──────────────────────────
-        SliverToBoxAdapter(
-          child: RepaintBoundary(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Tapping the title opens the search popup (Cue pop-in):
-                  // pre-filled query, "Search" or "Search all sources".
-                  GestureDetector(
-                    onTap: () => _onTitleTap(detail.title),
-                    // Official title logo when the toggle resolved one —
-                    // grows in smoothly instead of shoving Play down.
-                    child: AnimatedSize(
+    return NotificationListener<ScrollNotification>(
+      onNotification: _onScrollNotification,
+      // The banner does the stretching, so the stock overscroll glow stays off.
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(overscroll: false),
+        child: ValueListenableBuilder<double>(
+          valueListenable: _pull,
+          builder: (context, pull, _) => NestedScrollView(
+            controller: _scrollController,
+            headerSliverBuilder: (context, _) => [
+              // ── 1. Hero: backdrop + overlapping poster + status/total ──────────
+              SliverAppBar(
+                // Pulled down: the banner gets taller and everything under it is
+                // pushed down with it, so the whole page stretches.
+                expandedHeight: _heroHeight + pull,
+                pinned: true,
+                // iOS-style chip with its own background (no top fade needed).
+                // Padded to sit 14px off the edge, mirroring the top-right
+                // trailer controls.
+                leadingWidth: 62,
+                leading: const Padding(
+                  padding: EdgeInsets.only(left: 14),
+                  child: _DetailBackButton(),
+                ),
+                // Opaque while adaptive colour is on, painted in the same wash as the
+                // body, so the pinned bar hides scrolled content instead of letting
+                // it show through (a transparent bar read as an unfinished page).
+                // Flat theme bg otherwise, exactly as before.
+                backgroundColor: ThemeController.adaptiveColour
+                    ? (_tint.value ?? AppColors.bg)
+                    : AppColors.bg,
+                surfaceTintColor: Colors.transparent,
+                shadowColor: Colors.transparent,
+                centerTitle: true,
+                titleSpacing: 0,
+                // As wide as the back button, so the title sits in the middle of
+                // the whole screen and not just of the space after the button.
+                actions: const [SizedBox(width: 62)],
+                // PRESERVED EFFECT: title fades in once the hero scrolls past.
+                title: AnimatedOpacity(
+                  opacity: _showAppBarTitle ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  // Mini title logo in the collapsed bar; plain text until (and
+                  // unless) one resolves.
+                  child: _logoUrl != null
+                      ? Align(
+                          alignment: Alignment.center,
+                          child: CachedNetworkImage(
+                            imageUrl: logoUrl!,
+                            height: 24,
+                            fit: BoxFit.contain,
+                            alignment: Alignment.center,
+                            fadeInDuration: const Duration(milliseconds: 250),
+                            errorWidget: (_, _, _) =>
+                                _barTitleText(detail.title),
+                            errorListener:
+                                widget.item.sourceId == stremioSourceId
+                                ? (_) => _loadLogo(failedUrl: logoUrl)
+                                : null,
+                          ),
+                        )
+                      : _barTitleText(detail.title),
+                ),
+                flexibleSpace: LayoutBuilder(
+                  builder: (context, box) {
+                    // 1 while the banner is fully open, 0 once it is the thin bar.
+                    final topPad = MediaQuery.paddingOf(context).top;
+                    final min = kToolbarHeight + topPad;
+                    final max = _heroHeight + topPad;
+                    final open = ((box.maxHeight - min) / (max - min)).clamp(
+                      0.0,
+                      1.0,
+                    );
+                    return Stack(
+                      fit: StackFit.expand,
+                      clipBehavior: Clip.none,
+                      children: [
+                        FlexibleSpaceBar(
+                          collapseMode: CollapseMode.parallax,
+                          background: RepaintBoundary(
+                            child: _Hero(
+                              coverUrl: coverUrl,
+                              imageDecodeWidth: mobileHeroDecodeWidth(
+                                item.sourceId,
+                                800,
+                              ),
+                              coverHeaders: coverHeaders,
+                              hasCover: hasCover,
+                              tint: ThemeController.adaptiveColour
+                                  ? _tint
+                                  : null,
+                              trailer: _trailerFuture,
+                              // Pause the trailer once the hero has scrolled past (reuses
+                              // the same signal that fades in the app-bar title).
+                              collapsed: _showAppBarTitle,
+                              onTapFullscreen: _openTrailer,
+                              pull: _pull,
+                            ),
+                          ),
+                        ),
+                        // Over the CURRENT visible banner, so its bottom edge is
+                        // always faded into the page, even while it collapses.
+                        Positioned.fill(
+                          child: _HeroFade(
+                            tint: ThemeController.adaptiveColour ? _tint : null,
+                          ),
+                        ),
+                        // Title and genres on the banner. They fade away as the
+                        // banner closes up into the top bar.
+                        Positioned.fill(
+                          child: Opacity(
+                            opacity: ((open - 0.35) / 0.45).clamp(0.0, 1.0),
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                              child: OverflowBox(
+                                alignment: Alignment.bottomCenter,
+                                minHeight: 0,
+                                maxHeight: 400,
+                                child: titleBlock,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+
+              // ── 3. White Play + gray Download buttons (full-width, stacked) ─────
+              // (The hero banner autoplays the trailer; tap it for fullscreen.)
+              //
+              // Each button carries its own 16px side padding (rather than one
+              // Padding wrapping the whole Column) so the Z Mode selector below
+              // can sit as a plain last child: it already supplies its own 16px
+              // side padding (it's normally a top-level sliver child), and a
+              // shared wrapper would double that indent.
+              SliverToBoxAdapter(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: _PlayButton(
+                              pill: true,
+                              loading: state.episodesLoading,
+                              label: buttonLabel,
+                              icon: isReading
+                                  ? Icons.menu_book_rounded
+                                  : Icons.play_arrow_rounded,
+                              onPressed: eps.isNotEmpty
+                                  ? () => _openPlayer(
+                                      eps,
+                                      resumeIdx,
+                                      detail,
+                                      category,
+                                    )
+                                  : null,
+                            ),
+                          ),
+                          // Reading downloads are out of scope for this plan.
+                          if (!isReading) ...[
+                            const SizedBox(width: 10),
+                            _DownloadButton(
+                              iconOnly: true,
+                              // Gated exactly like Play: with no episodes there is
+                              // nothing to download, and leaving it live on a title
+                              // no source matched just moves the dead end one tap
+                              // later.
+                              loading: state.episodesLoading,
+                              label: downloadLabel,
+                              onPressed: eps.isEmpty
+                                  ? null
+                                  : () => _openDownloadSheet(
+                                      detail: detail,
+                                      category: category,
+                                      episodesBySeason: episodesBySeason,
+                                      initialSeason: currentSeason,
+                                    ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    // Z Mode: matched source + "Wrong title?", kept with the
+                    // actions it controls instead of under the synopsis.
+                    // The first frame may be built from the tapped catalogue card,
+                    // which has no synonyms/native title. Don't start a canonical
+                    // source search until full metadata arrives: resolve() shares
+                    // in-flight work by title id, so an early search would make the
+                    // later alias-aware lookup reuse the incomplete one.
+                    // Same late-arrival growth as the meta line above.
+                    AnimatedSize(
                       duration: const Duration(milliseconds: 250),
                       curve: Curves.easeOut,
                       alignment: Alignment.topCenter,
-                      child: _logoUrl != null
-                          // Compact natural-size box (never full-width): the
-                          // logo fades in exactly where it lands — no
-                          // centre-then-left snap while loading.
-                          ? ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                maxHeight: 56,
-                                maxWidth: 220,
-                              ),
-                              child: CachedNetworkImage(
-                                imageUrl: logoUrl!,
-                                fit: BoxFit.contain,
-                                alignment: Alignment.centerLeft,
-                                fadeInDuration: const Duration(
-                                  milliseconds: 250,
-                                ),
-                                errorWidget: (_, _, _) =>
-                                    _headerTitleText(detail.title),
-                                errorListener:
-                                    widget.item.sourceId == stremioSourceId
-                                    ? (_) => _loadLogo(failedUrl: logoUrl)
-                                    : null,
-                              ),
+                      child:
+                          sourceMetadataReady && ZmodeIds.isZ(widget.item.url)
+                          ? MatchLine(
+                              canonical: ZmodeIds.parseShow(widget.item.url)!,
+                              title: detail.title,
+                              altTitle: detail.englishTitle,
+                              malId: detail.malId,
+                              metadataAliases: [
+                                if (detail.englishTitle != null)
+                                  detail.englishTitle!,
+                                if (detail.nativeTitle != null)
+                                  detail.nativeTitle!,
+                                ...detail.synonyms,
+                              ],
                             )
-                          : _headerTitleText(detail.title),
+                          : const SizedBox.shrink(),
                     ),
-                  ),
-                  // Late metadata grows this block instead of shoving Play
-                  // down a frame — that shove read as open-transition jitter.
-                  AnimatedSize(
-                    duration: const Duration(milliseconds: 250),
-                    curve: Curves.easeOut,
-                    alignment: Alignment.topCenter,
-                    child: metaLine.isNotEmpty
-                        ? Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      metaLine,
-                                      style: AppText.body.copyWith(
-                                        color: AppColors.textSecondary,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  // What the source claims it serves — "4K", "HD",
-                                  // "CAM". Only CloudStream reports one, so it is
-                                  // usually absent.
-                                  if ((item.quality ?? '')
-                                      .trim()
-                                      .isNotEmpty) ...[
-                                    const SizedBox(width: 8),
-                                    _MetaBadge(
-                                      item.quality!.trim().toUpperCase(),
-                                    ),
-                                  ],
-                                  if (detail.isAdult) ...[
-                                    const SizedBox(width: 8),
-                                    const _MetaBadge('18+'),
-                                  ],
-                                ],
-                              ),
-                            ],
-                          )
-                        : const SizedBox.shrink(),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ),
-        ),
 
-        // ── 3. White Play + gray Download buttons (full-width, stacked) ─────
-        // (The hero banner autoplays the trailer; tap it for fullscreen.)
-        //
-        // Each button carries its own 16px side padding (rather than one
-        // Padding wrapping the whole Column) so the Z Mode selector below
-        // can sit as a plain last child: it already supplies its own 16px
-        // side padding (it's normally a top-level sliver child), and a
-        // shared wrapper would double that indent.
-        SliverToBoxAdapter(
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
-                child: _PlayButton(
-                  loading: state.episodesLoading,
-                  label: buttonLabel,
-                  icon: isReading
-                      ? Icons.menu_book_rounded
-                      : Icons.play_arrow_rounded,
-                  onPressed: eps.isNotEmpty
-                      ? () => _openPlayer(eps, resumeIdx, detail, category)
-                      : null,
-                ),
-              ),
-              // Reading downloads are out of scope for this plan.
-              if (!isReading)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-                  child: _DownloadButton(
-                    // Gated exactly like Play above: with no episodes there is
-                    // nothing to download, and leaving it live on a title no
-                    // source matched just moves the dead end one tap later.
-                    loading: state.episodesLoading,
-                    label: downloadLabel,
-                    onPressed: eps.isEmpty
-                        ? null
-                        : () => _openDownloadSheet(
-                            detail: detail,
-                            category: category,
-                            episodesBySeason: episodesBySeason,
-                            initialSeason: currentSeason,
+              // ── 6. Icon-over-label action row (My List / Trailer / Share / Web) ─
+              // "Trailer" is a CloudStream-style result action (recloudstream's
+              // result fragment exposes a Trailer button); it opens the fullscreen
+              // TrailerScreen and only appears once a trailer id has resolved.
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 20, 8, 8),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _IconAction(
+                        icon: _inMyList
+                            ? Icons.check_rounded
+                            : Icons.add_rounded,
+                        active: _inMyList,
+                        // Reading-aware: a manga on your list is "Reading", not
+                        // "Watching". Display only — the stored status is still
+                        // WatchStatus.watching, so My List and the trackers are
+                        // untouched, and reading:false returns the plain label
+                        // unchanged for anime.
+                        label: _status == null
+                            ? context.l10n.myList
+                            : shortLabelFor(_status!, reading: isReading),
+                        tooltip: _inMyList
+                            ? context.l10n.changeStatus
+                            : context.l10n.addToMyList,
+                        onTap: () => _openListSheet(detail),
+                      ),
+                      if (Platform.isAndroid &&
+                          (_subscribed ||
+                              (!state.episodesLoading && eps.isNotEmpty)))
+                        _IconAction(
+                          icon: _subscribed
+                              ? Icons.notifications_active_rounded
+                              : Icons.notifications_none_rounded,
+                          active: _subscribed,
+                          label: context.l10n.notify,
+                          tooltip: _subscribed
+                              ? context.l10n.stopAlerts
+                              : (isReading
+                                    ? context.l10n.notifyOnNewChapters
+                                    : context.l10n.notifyOnNewEpisodes),
+                          onTap: () => _toggleSubscribe(detail),
+                        ),
+                      if (_trackingAvailable(detail))
+                        _IconAction(
+                          icon: _tracked
+                              ? Icons.published_with_changes_rounded
+                              : Icons.sync_rounded,
+                          active: _tracked,
+                          label: context.l10n.tracking,
+                          tooltip: _tracked
+                              ? context.l10n.trackedEditStatusScoreProgress
+                              : context.l10n.syncStatusScoreProgress,
+                          onTap: () => _openTrackingSheet(detail),
+                        ),
+                      _IconAction(
+                        icon: Icons.ios_share_rounded,
+                        label: context.l10n.share,
+                        tooltip: context.l10n.share,
+                        onTap: () => _share(detail, sourceName),
+                      ),
+                      _IconAction(
+                        icon: Icons.public_rounded,
+                        label: context.l10n.web,
+                        tooltip: context.l10n.openSourceSite,
+                        onTap: _openSourceSite,
+                      ),
+                      // Novel only — a manga chapter is images, not text, and
+                      // there's nothing to put in an EPUB.
+                      if (detail.type == ProviderType.novel)
+                        _IconAction(
+                          icon: Icons.output,
+                          label: context.l10n.epub,
+                          tooltip: context.l10n.exportAsEpub,
+                          onTap: () => showEpubExportSheet(
+                            context,
+                            sourceId: detail.sourceId.isNotEmpty
+                                ? detail.sourceId
+                                : item.sourceId,
+                            showTitle: detail.title,
+                            chapters: eps,
                           ),
+                        ),
+                    ],
                   ),
                 ),
-              // Z Mode: matched source + "Wrong title?", kept with the
-              // actions it controls instead of under the synopsis.
-              // The first frame may be built from the tapped catalogue card,
-              // which has no synonyms/native title. Don't start a canonical
-              // source search until full metadata arrives: resolve() shares
-              // in-flight work by title id, so an early search would make the
-              // later alias-aware lookup reuse the incomplete one.
-              // Same late-arrival growth as the meta line above.
-              AnimatedSize(
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOut,
-                alignment: Alignment.topCenter,
-                child: sourceMetadataReady && ZmodeIds.isZ(widget.item.url)
-                    ? MatchLine(
-                        canonical: ZmodeIds.parseShow(widget.item.url)!,
-                        title: detail.title,
-                        altTitle: detail.englishTitle,
-                        malId: detail.malId,
-                        metadataAliases: [
-                          if (detail.englishTitle != null) detail.englishTitle!,
-                          if (detail.nativeTitle != null) detail.nativeTitle!,
-                          ...detail.synonyms,
-                        ],
-                      )
-                    : const SizedBox.shrink(),
+              ),
+
+              // ── 7. Pinned tab bar ───────────────────────────────────────────────
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _TabBarDelegate(
+                  _ChipTabs(
+                    controller: _tabController,
+                    labels: [
+                      context.l10n.overview,
+                      isReading
+                          ? context.l10n.chapters
+                          : (detail.isFilm
+                                ? context.l10n.movie
+                                : context.l10n.episodes),
+                    ],
+                    trailingLabel: context.l10n.watchComments,
+                    trailingIcon: Icons.forum_outlined,
+                  ),
+                  tint: ThemeController.adaptiveColour ? _tint : null,
+                ),
               ),
             ],
-          ),
-        ),
-
-        // ── 4. Synopsis (clamped) + "Read more" → Details tab ───────────────
-        SliverToBoxAdapter(
-          child: AnimatedSize(
-            duration: const Duration(milliseconds: 250),
-            curve: Curves.easeOut,
-            alignment: Alignment.topCenter,
-            child: (cleanSynopsis(detail.description) ?? '').isNotEmpty
-                ? Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
-                    child: _Description(
-                      text: cleanSynopsis(detail.description) ?? '',
-                      // "Read more" reveals the Details tab (full synopsis) rather
-                      // than expanding inline; the header stays clamped to 3 lines.
-                      onReadMore: () => _revealTab(3),
-                    ),
-                  )
-                : const SizedBox.shrink(),
-          ),
-        ),
-
-        // ── 5. Starring / Creators / Genres muted lines ─────────────────────
-        SliverToBoxAdapter(
-          child: AnimatedSize(
-            duration: const Duration(milliseconds: 250),
-            curve: Curves.easeOut,
-            alignment: Alignment.topCenter,
-            child: starring != null || creators != null || genresLine != null
-                ? Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (starring != null)
-                          _CreditLine(
-                            label: context.l10n.starring,
-                            value: starring,
-                            more: starringMore,
-                            // Tapping the line (or its "… more") reveals the Cast tab.
-                            onMore: starringMore ? () => _revealTab(1) : null,
-                          ),
-                        if (genresLine != null)
-                          _CreditLine(
-                            label: context.l10n.genres,
-                            value: genresLine,
-                          ),
-                        if (creators != null)
-                          _CreditLine(
-                            label: context.l10n.creators,
-                            value: creators,
-                          ),
-                      ],
-                    ),
-                  )
-                : const SizedBox.shrink(),
-          ),
-        ),
-
-        // ── 6. Icon-over-label action row (My List / Trailer / Share / Web) ─
-        // "Trailer" is a CloudStream-style result action (recloudstream's
-        // result fragment exposes a Trailer button); it opens the fullscreen
-        // TrailerScreen and only appears once a trailer id has resolved.
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(8, 20, 8, 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _IconAction(
-                  icon: _inMyList ? Icons.check_rounded : Icons.add_rounded,
-                  active: _inMyList,
-                  // Reading-aware: a manga on your list is "Reading", not
-                  // "Watching". Display only — the stored status is still
-                  // WatchStatus.watching, so My List and the trackers are
-                  // untouched, and reading:false returns the plain label
-                  // unchanged for anime.
-                  label: _status == null
-                      ? context.l10n.myList
-                      : shortLabelFor(_status!, reading: isReading),
-                  tooltip: _inMyList
-                      ? context.l10n.changeStatus
-                      : context.l10n.addToMyList,
-                  onTap: () => _openListSheet(detail),
-                ),
-                if (Platform.isAndroid &&
-                    (_subscribed || (!state.episodesLoading && eps.isNotEmpty)))
-                  _IconAction(
-                    icon: _subscribed
-                        ? Icons.notifications_active_rounded
-                        : Icons.notifications_none_rounded,
-                    active: _subscribed,
-                    label: context.l10n.notify,
-                    tooltip: _subscribed
-                        ? context.l10n.stopAlerts
-                        : (isReading
-                              ? context.l10n.notifyOnNewChapters
-                              : context.l10n.notifyOnNewEpisodes),
-                    onTap: () => _toggleSubscribe(detail),
-                  ),
-                if (_trackingAvailable(detail))
-                  _IconAction(
-                    icon: _tracked
-                        ? Icons.published_with_changes_rounded
-                        : Icons.sync_rounded,
-                    active: _tracked,
-                    label: context.l10n.tracking,
-                    tooltip: _tracked
-                        ? context.l10n.trackedEditStatusScoreProgress
-                        : context.l10n.syncStatusScoreProgress,
-                    onTap: () => _openTrackingSheet(detail),
-                  ),
-                _IconAction(
-                  icon: Icons.ios_share_rounded,
-                  label: context.l10n.share,
-                  tooltip: context.l10n.share,
-                  onTap: () => _share(detail, sourceName),
-                ),
-                _IconAction(
-                  icon: Icons.public_rounded,
-                  label: context.l10n.web,
-                  tooltip: context.l10n.openSourceSite,
-                  onTap: _openSourceSite,
-                ),
-                // Novel only — a manga chapter is images, not text, and
-                // there's nothing to put in an EPUB.
-                if (detail.type == ProviderType.novel)
-                  _IconAction(
-                    icon: Icons.output,
-                    label: context.l10n.epub,
-                    tooltip: context.l10n.exportAsEpub,
-                    onTap: () => showEpubExportSheet(
-                      context,
-                      sourceId: detail.sourceId.isNotEmpty
-                          ? detail.sourceId
-                          : item.sourceId,
-                      showTitle: detail.title,
-                      chapters: eps,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-
-        // ── 7. Pinned tab bar ───────────────────────────────────────────────
-        SliverPersistentHeader(
-          pinned: true,
-          delegate: _TabBarDelegate(
-            TabBar(
+            body: _FadePages(
               controller: _tabController,
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              // Hug the left edge: the first tab starts flush with the 16px
-              // content gutter (title/synopsis), and labelPadding(right: 24)
-              // spaces the tabs apart while keeping them left-anchored —
-              // never centered/spread (matches Sozo Read).
-              padding: const EdgeInsetsDirectional.only(start: 16),
-              labelPadding: const EdgeInsetsDirectional.only(end: 24),
-              labelColor: AppColors.accent,
-              unselectedLabelColor: AppColors.textSecondary,
-              indicatorSize: TabBarIndicatorSize.label,
-              indicator: UnderlineTabIndicator(
-                borderSide: BorderSide(color: AppColors.accent, width: 2.5),
-                // Bottom inset lifts the line toward the label. A Tab is 46
-                // high for 15px text, so the indicator otherwise draws at the
-                // bottom of that box with a visible gap under the word.
-                // Raising the line rather than shortening the tab keeps the
-                // tap target at its full height.
-                insets: EdgeInsetsDirectional.only(start: 2, end: 2, bottom: 8),
-              ),
-              // Remove the full-width underline divider under the bar.
-              dividerColor: Colors.transparent,
-              dividerHeight: 0,
-              splashFactory: NoSplash.splashFactory,
-              overlayColor: WidgetStateProperty.all(Colors.transparent),
-              labelStyle: AppText.headline.copyWith(fontSize: 15),
-              unselectedLabelStyle: AppText.headline.copyWith(
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-              ),
-              tabs: [
-                Tab(
-                  text: isReading
-                      ? context.l10n.chapters
-                      : (detail.isFilm
-                            ? context.l10n.movie
-                            : context.l10n.episodes),
+              children: [
+                // ── Overview: cast, seasons/relations and details as rows ───────────
+                _OverviewTab(
+                  // Cast and relations arrive on their own request, after the page is
+                  // already up — and before the source resolve has even started.
+                  loading: state.extrasLoading || state.episodesLoading,
+                  cast: state.cast.isNotEmpty
+                      ? state.cast
+                      : [for (final n in detail.cast) CastMember(name: n)],
+                  onOpenPerson: (ref) => Navigator.of(
+                    context,
+                  ).push(PersonPage.route(ref, sourceId: widget.item.sourceId)),
+                  relations: state.relations,
+                  seasons: state.seasons,
+                  onOpenRelation: _openRelation,
+                  synopsis: cleanSynopsis(detail.description) ?? '',
+                  genres: detail.genres,
+                  year: detail.year,
+                  runtimeMins: detail.durationMins,
+                  badges: state.badges,
+                  onRetryExtras: cubit.retryExtras,
+                  score: detail.score,
+                  // Tappable only on a metadata title, same rule the old Details tab used.
+                  onGenre: detail.sourceId == ZmodeIds.sourceId
+                      ? (g) => _browseBy(context, MetaFilters(genres: [g]))
+                      : null,
+                  castLabel: isReading
+                      ? context.l10n.characters
+                      : context.l10n.cast,
+                  details: _DetailsTab(
+                    sourceName: sourceName,
+                    statusStr: statusStr,
+                    reading: isReading,
+                    genres: detail.genres,
+                    studios: detail.studios,
+                    episodeCount: eps.length,
+                    isMovie: detail.isFilm,
+                    year: detail.year,
+                    description: cleanSynopsis(detail.description),
+                    detail: detail,
+                    embedded: true,
+                  ),
                 ),
-                Tab(
-                  text: isReading ? context.l10n.characters : context.l10n.cast,
+                // ── Episodes ──────────────────────────────────────────────────────
+                _EpisodesTab(
+                  loading: state.episodesLoading,
+                  versionPicker: showSubDubFor(detail)
+                      ? SegmentedButton<String>(
+                          showSelectedIcon: false,
+                          style: SegmentedButton.styleFrom(
+                            backgroundColor: AppColors.surface2,
+                            foregroundColor: AppColors.textSecondary,
+                            selectedBackgroundColor: AppColors.accentSoft,
+                            selectedForegroundColor: AppColors.textPrimary,
+                            side: const BorderSide(color: AppColors.hairline),
+                            textStyle: AppText.caption.copyWith(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 7),
+                            minimumSize: const Size(36, 28),
+                          ),
+                          segments: [
+                            ButtonSegment(
+                              value: 'sub',
+                              label: Text(context.l10n.sub),
+                            ),
+                            ButtonSegment(
+                              value: 'dub',
+                              label: Text(context.l10n.dub),
+                            ),
+                          ],
+                          selected: {category},
+                          onSelectionChanged: (selection) =>
+                              _changeEpisodeVersion(context, selection.single),
+                        )
+                      : null,
+                  eps: eps,
+                  seasonEps: seasonEps,
+                  fillerEps: _fillerEps,
+                  hasMultipleSeasons: hasMultipleSeasons,
+                  seasonSet: seasonSet,
+                  currentSeason: currentSeason,
+                  onSelectSeason: cubit.selectSeason,
+                  coverUrl: coverUrl,
+                  coverHeaders: coverHeaders,
+                  sourceId: item.sourceId,
+                  // Downloads name the source that has the files; progress above
+                  // stays on the canonical id.
+                  downloadSourceId: detail.sourceId.isNotEmpty
+                      ? detail.sourceId
+                      : item.sourceId,
+                  showId: item.id,
+                  showUrl: item.url,
+                  resumeIndex: _resumeIndex,
+                  hasAnyMark: hasAnyMark,
+                  trackerProgress: _trackerProgress,
+                  nextAiringEpisode: _nextAiringEpisode,
+                  nextAiringAt: _nextAiringAt,
+                  onOpen: (fullIndex) =>
+                      _openPlayer(eps, fullIndex, detail, category),
+                  // Reading has no player to pick, but it does have the marking
+                  // rows — gating the whole menu on the player is what hid them.
+                  onEpisodeMenu: (fullIndex) =>
+                      _pickPlayerFor(eps, fullIndex, detail, category),
+                  onRefresh: cubit.refresh,
+                  onDownload: (ep) => isReading
+                      ? _downloadChapter(ep, detail)
+                      : _downloadSingle(ep, detail, category),
+                  onDownloadMany: isReading
+                      ? (eps) => _downloadChapters(eps, detail)
+                      : null,
+                  resumeChapter: readResume == null || eps.isEmpty
+                      ? null
+                      : eps[readResume.index],
+                  // Only a catalogue title has another source to fall back on.
+                  onSwitchSource: ZmodeIds.isZ(item.url) ? _switchSource : null,
+                  isReading: isReading,
+                  filmMeta: _filmMeta(detail),
+                  filmTitle: detail.title,
+                  hasScheduledVideos: detail.hasScheduledVideos,
                 ),
-                Tab(text: context.l10n.relations),
-                Tab(text: context.l10n.details),
+                // ── Comments: not built yet ─────────────────────────────────────────
+                _emptyTab(Icons.forum_outlined, context.l10n.watchComingSoon),
               ],
             ),
-            tint: ThemeController.adaptiveColour ? _tint : null,
           ),
         ),
-      ],
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          // ── Episodes ──────────────────────────────────────────────────────
-          _EpisodesTab(
-            loading: state.episodesLoading,
-            versionPicker: showSubDubFor(detail)
-                ? SegmentedButton<String>(
-                    showSelectedIcon: false,
-                    style: SegmentedButton.styleFrom(
-                      backgroundColor: AppColors.surface2,
-                      foregroundColor: AppColors.textSecondary,
-                      selectedBackgroundColor: AppColors.accentSoft,
-                      selectedForegroundColor: AppColors.textPrimary,
-                      side: const BorderSide(color: AppColors.hairline),
-                      textStyle: AppText.caption.copyWith(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 7),
-                      minimumSize: const Size(36, 28),
-                    ),
-                    segments: [
-                      ButtonSegment(
-                        value: 'sub',
-                        label: Text(context.l10n.sub),
-                      ),
-                      ButtonSegment(
-                        value: 'dub',
-                        label: Text(context.l10n.dub),
-                      ),
-                    ],
-                    selected: {category},
-                    onSelectionChanged: (selection) =>
-                        _changeEpisodeVersion(context, selection.single),
-                  )
-                : null,
-            eps: eps,
-            seasonEps: seasonEps,
-            fillerEps: _fillerEps,
-            hasMultipleSeasons: hasMultipleSeasons,
-            seasonSet: seasonSet,
-            currentSeason: currentSeason,
-            onSelectSeason: cubit.selectSeason,
-            coverUrl: coverUrl,
-            coverHeaders: coverHeaders,
-            sourceId: item.sourceId,
-            // Downloads name the source that has the files; progress above
-            // stays on the canonical id.
-            downloadSourceId: detail.sourceId.isNotEmpty
-                ? detail.sourceId
-                : item.sourceId,
-            showId: item.id,
-            showUrl: item.url,
-            resumeIndex: _resumeIndex,
-            hasAnyMark: hasAnyMark,
-            trackerProgress: _trackerProgress,
-            nextAiringEpisode: _nextAiringEpisode,
-            nextAiringAt: _nextAiringAt,
-            onOpen: (fullIndex) =>
-                _openPlayer(eps, fullIndex, detail, category),
-            // Reading has no player to pick, but it does have the marking
-            // rows — gating the whole menu on the player is what hid them.
-            onEpisodeMenu: (fullIndex) =>
-                _pickPlayerFor(eps, fullIndex, detail, category),
-            onRefresh: cubit.refresh,
-            onDownload: (ep) => isReading
-                ? _downloadChapter(ep, detail)
-                : _downloadSingle(ep, detail, category),
-            onDownloadMany: isReading
-                ? (eps) => _downloadChapters(eps, detail)
-                : null,
-            resumeChapter: readResume == null || eps.isEmpty
-                ? null
-                : eps[readResume.index],
-            // Only a catalogue title has another source to fall back on.
-            onSwitchSource: ZmodeIds.isZ(item.url) ? _switchSource : null,
-            isReading: isReading,
-            filmMeta: _filmMeta(detail),
-            filmTitle: detail.title,
-            hasScheduledVideos: detail.hasScheduledVideos,
-          ),
-          // ── Cast ────────────────────────────────────────────────────────────
-          _CastTab(
-            loading: state.extrasLoading,
-            cast: state.cast.isNotEmpty
-                ? state.cast
-                : [for (final n in detail.cast) CastMember(name: n)],
-            onOpenPerson: (ref) => Navigator.of(
-              context,
-            ).push(PersonPage.route(ref, sourceId: widget.item.sourceId)),
-          ),
-          // ── Relations ─────────────────────────────────────────────────────────
-          _RelationsTab(
-            loading: state.extrasLoading,
-            relations: state.relations,
-            seasons: state.seasons,
-            onOpen: _openRelation,
-          ),
-          // ── Details ──────────────────────────────────────────────────────────
-          _DetailsTab(
-            sourceName: sourceName,
-            statusStr: statusStr,
-            reading: isReading,
-            genres: detail.genres,
-            studios: detail.studios,
-            episodeCount: eps.length,
-            isMovie: detail.isFilm,
-            year: detail.year,
-            description: cleanSynopsis(detail.description),
-            detail: detail,
-          ),
-        ],
       ),
     );
   }
+}
+
+/// What a detail page shows until it has loaded: the page colour and one
+/// circular loader in the middle of the whole screen.
+class _DetailLoading extends StatelessWidget {
+  const _DetailLoading();
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+    color: AppColors.bg,
+    child: const Center(child: _AppSpinner()),
+  );
 }
 
 /// The bar shown when a detail page only half-loaded.

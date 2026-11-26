@@ -425,7 +425,11 @@ class _DetailsTab extends StatelessWidget {
     required this.description,
     this.reading = false,
     this.isMovie = false,
+    this.embedded = false,
   });
+
+  /// Sits inside the Overview page's own scroll view instead of scrolling itself.
+  final bool embedded;
 
   final String sourceName;
   final String statusStr;
@@ -446,8 +450,73 @@ class _DetailsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final desc = description ?? '';
+    if (embedded) {
+      final tags = _tagChips(context);
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                child: Column(
+                  children: [
+                    if (sourceName.isNotEmpty)
+                      _DetailRow(
+                        rightAlign: true,
+                        label: context.l10n.playerInfoSource,
+                        value: sourceName,
+                      ),
+                    if (statusStr.isNotEmpty)
+                      _DetailRow(
+                        rightAlign: true,
+                        label: context.l10n.status,
+                        value: statusStr,
+                      ),
+                    if ((year ?? '').isNotEmpty)
+                      _DetailRow(
+                        rightAlign: true,
+                        label: context.l10n.year,
+                        value: year!,
+                      ),
+                    if (!isMovie)
+                      _DetailRow(
+                        rightAlign: true,
+                        label: reading
+                            ? context.l10n.chapters
+                            : context.l10n.episodes,
+                        value: '$episodeCount',
+                      ),
+                    if (studios.isNotEmpty)
+                      _DetailRow(
+                        rightAlign: true,
+                        label: context.l10n.studio,
+                        value: studios.join(', '),
+                      ),
+                    ..._providerRows(context, rightAlign: true),
+                  ],
+                ),
+              ),
+            ),
+            if (tags.isNotEmpty) ...[const SizedBox(height: 14), ...tags],
+          ],
+        ),
+      );
+    }
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
+      shrinkWrap: embedded,
+      physics: embedded ? const NeverScrollableScrollPhysics() : null,
+      padding: EdgeInsets.fromLTRB(
+        16,
+        embedded ? 8 : 20,
+        16,
+        embedded ? 24 : 40,
+      ),
       children: [
         if (sourceName.isNotEmpty)
           _DetailRow(label: context.l10n.playerInfoSource, value: sourceName),
@@ -498,7 +567,7 @@ class _DetailsTab extends StatelessWidget {
           ),
         ],
         ..._tagChips(context),
-        if (desc.isNotEmpty) ...[
+        if (desc.isNotEmpty && !embedded) ...[
           const SizedBox(height: 20),
           Text(
             context.l10n.synopsis,
@@ -512,7 +581,7 @@ class _DetailsTab extends StatelessWidget {
   }
 
   /// Everything a metadata provider knows that the header has no room for.
-  List<Widget> _providerRows(BuildContext context) {
+  List<Widget> _providerRows(BuildContext context, {bool rightAlign = false}) {
     final d = detail;
     if (d == null) return const [];
     final l10n = context.l10n;
@@ -527,24 +596,59 @@ class _DetailsTab extends StatelessWidget {
 
     final aired = dates();
     return [
-      if (d.format != null) _DetailRow(label: l10n.format, value: d.format!),
+      if (d.format != null)
+        _DetailRow(
+          rightAlign: rightAlign,
+          label: l10n.format,
+          value: d.format!,
+        ),
       if (d.durationMins != null)
-        _DetailRow(label: l10n.duration, value: '${d.durationMins} min'),
+        _DetailRow(
+          rightAlign: rightAlign,
+          label: l10n.duration,
+          value: '${d.durationMins} min',
+        ),
       if (d.score != null)
-        _DetailRow(label: l10n.score, value: '${d.score! / 10} / 10'),
+        _DetailRow(
+          rightAlign: rightAlign,
+          label: l10n.score,
+          value: '${d.score! / 10} / 10',
+        ),
       if (d.popularity != null)
-        _DetailRow(label: l10n.popularity, value: _thousands(d.popularity!)),
+        _DetailRow(
+          rightAlign: rightAlign,
+          label: l10n.popularity,
+          value: _thousands(d.popularity!),
+        ),
       if (d.favourites != null)
-        _DetailRow(label: l10n.favourites, value: _thousands(d.favourites!)),
+        _DetailRow(
+          rightAlign: rightAlign,
+          label: l10n.favourites,
+          value: _thousands(d.favourites!),
+        ),
       if (d.sourceMaterial != null)
-        _DetailRow(label: l10n.sourceMaterial, value: d.sourceMaterial!),
+        _DetailRow(
+          rightAlign: rightAlign,
+          label: l10n.sourceMaterial,
+          value: d.sourceMaterial!,
+        ),
       if (d.country != null)
-        _DetailRow(label: l10n.country, value: _countryName(d.country!)),
-      if (aired != null) _DetailRow(label: l10n.aired, value: aired),
+        _DetailRow(
+          rightAlign: rightAlign,
+          label: l10n.country,
+          value: _countryName(d.country!),
+        ),
+      if (aired != null)
+        _DetailRow(rightAlign: rightAlign, label: l10n.aired, value: aired),
       if ((d.nativeTitle ?? '').isNotEmpty)
-        _DetailRow(label: l10n.nativeTitle, value: d.nativeTitle!),
+        _DetailRow(
+          rightAlign: rightAlign,
+          label: l10n.nativeTitle,
+          value: d.nativeTitle!,
+        ),
       if (d.synonyms.isNotEmpty)
         _DetailRow(
+          rightAlign: rightAlign,
           label: l10n.alsoKnownAs,
           // Five is enough to recognise it by; some titles carry thirty.
           value: d.synonyms.take(5).join(' · '),
@@ -644,12 +748,45 @@ class _SpoilerTagsState extends State<_SpoilerTags> {
 }
 
 class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.label, required this.value});
+  const _DetailRow({
+    required this.label,
+    required this.value,
+    this.rightAlign = false,
+  });
   final String label;
   final String value;
 
+  /// The Overview's details card: the label on the left, the value pushed to
+  /// the right edge, both a readable size.
+  final bool rightAlign;
+
   @override
   Widget build(BuildContext context) {
+    if (rightAlign) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: AppText.body.copyWith(color: AppColors.textTertiary),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                value,
+                textAlign: TextAlign.end,
+                style: AppText.body.copyWith(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
@@ -691,13 +828,13 @@ class _MetaBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        border: Border.all(color: AppColors.textTertiary),
+        border: Border.all(color: AppColors.textSecondary),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(
         text,
         style: AppText.caption.copyWith(
-          color: AppColors.textTertiary,
+          color: AppColors.textPrimary,
           fontSize: 11,
           fontWeight: FontWeight.w700,
         ),
@@ -789,6 +926,667 @@ class _CardGridSkeleton extends StatelessWidget {
             const SizedBox(height: 8),
             _bone(cell * 0.75, 11),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Overview tab — Cast, Seasons/Relations and Details as one scrolling page of
+// rows, in place of the separate Cast / Relations / Details tabs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _OverviewTab extends StatelessWidget {
+  const _OverviewTab({
+    required this.cast,
+    required this.relations,
+    required this.seasons,
+    required this.onOpenRelation,
+    required this.onOpenPerson,
+    required this.details,
+    required this.castLabel,
+    required this.synopsis,
+    required this.genres,
+    this.onGenre,
+    this.year,
+    this.runtimeMins,
+    this.badges,
+    this.score,
+    this.onRetryExtras,
+    this.loading = false,
+  });
+
+  /// Called once, a moment after loading ends with no cast or relations at all,
+  /// so a request that failed gets a second chance. Null in places that do not
+  /// want that.
+  final VoidCallback? onRetryExtras;
+
+  /// The facts for the top row: release year, run time, and — when found — the
+  /// age tag and IMDb score. [score] (out of 100, from the anime trackers) stands
+  /// in when there is no IMDb score.
+  final String? year;
+  final int? runtimeMins;
+  final TitleBadges? badges;
+  final int? score;
+
+  final List<String> genres;
+
+  /// Null leaves the genre chips as plain information.
+  final void Function(String)? onGenre;
+
+  final String synopsis;
+  final List<CastMember> cast;
+  final List<MediaRelation> relations;
+  final List<SeasonEntry> seasons;
+  final void Function(MediaRelation) onOpenRelation;
+  final void Function(PersonRef) onOpenPerson;
+  final Widget details;
+  final String castLabel;
+
+  /// Cast and relations arrive on their own request after the detail does.
+  final bool loading;
+
+  Widget _header(BuildContext context, String text) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 24, 16, 12),
+    // A real section title: bigger, bold and in normal case, not a faint label.
+    child: Text(
+      text,
+      style: AppText.headline.copyWith(
+        color: AppColors.textPrimary,
+        fontSize: 20,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+
+  /// Avatar size by screen width, the way a phone and a tablet each want it.
+  static double _avatarFor(double width) => width >= 600
+      ? 100
+      : width >= 420
+      ? 88
+      : 80;
+
+  /// "AB" for "Ada Byron", "Ma" for "Madonna" — what shows when there is no photo.
+  static String _initials(String name) {
+    final parts = name.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty);
+    final list = parts.toList();
+    if (list.isEmpty) return '';
+    if (list.length == 1) {
+      final w = list.first;
+      return w.length <= 2 ? w.toUpperCase() : w.substring(0, 2);
+    }
+    return '${list.first[0]}${list.last[0]}'.toUpperCase();
+  }
+
+  Widget _castCard(CastMember m, double avatar) {
+    final card = SizedBox(
+      width: avatar + 12,
+      child: Column(
+        children: [
+          Container(
+            width: avatar,
+            height: avatar,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.surface2,
+              border: Border.all(color: AppColors.hairline),
+            ),
+            child: ClipOval(
+              child: (m.photo != null && m.photo!.isNotEmpty)
+                  ? CachedNetworkImage(
+                      imageUrl: m.photo!,
+                      fit: BoxFit.cover,
+                      memCacheWidth: 240,
+                      placeholder: (_, _) =>
+                          Container(color: AppColors.surface2),
+                      errorWidget: (_, _, _) =>
+                          _InitialsAvatar(_initials(m.name)),
+                    )
+                  : _InitialsAvatar(_initials(m.name)),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            m.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: AppText.caption.copyWith(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (m.role != null && m.role!.isNotEmpty)
+            Text(
+              m.role!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: AppText.caption.copyWith(
+                color: AppColors.textSecondary,
+                fontSize: 11,
+              ),
+            ),
+        ],
+      ),
+    );
+    final ref = m.person;
+    return ref == null
+        ? card
+        : _PressableCard(onTap: () => onOpenPerson(ref), child: card);
+  }
+
+  Widget _row(double height, int count, Widget Function(int) item) => SizedBox(
+    height: height,
+    child: ListView.separated(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      itemCount: count,
+      separatorBuilder: (_, _) => const SizedBox(width: 12),
+      itemBuilder: (_, i) => item(i),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    // A season is a relation card with its own title, same as the Relations tab.
+    final rel = _RelationsTab(
+      relations: relations,
+      seasons: seasons,
+      onOpen: onOpenRelation,
+    );
+    final seasonCards = [
+      for (final s in seasons) _RelationsTab._asRelation(context, s),
+    ];
+    final rest = rel._rest;
+    // On a manga the cast holds characters AND the people who made it; keep
+    // them as two labelled rows, same split the old Cast tab made.
+    final staff = [
+      for (final m in cast)
+        if (m.person?.source == PersonSource.anilistStaff) m,
+    ];
+    final people = staff.isEmpty || staff.length == cast.length
+        ? cast
+        : [
+            for (final m in cast)
+              if (!staff.contains(m)) m,
+          ];
+    final crew = staff.isEmpty || staff.length == cast.length
+        ? const <CastMember>[]
+        : staff;
+    final avatar = _avatarFor(MediaQuery.sizeOf(context).width);
+    final castRowHeight = avatar + 50;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 40),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _OverviewMeta(
+            year: year,
+            runtime: formatRuntime(runtimeMins),
+            ageRating: badges?.ageRating,
+            imdbRating: badges?.imdbRating,
+            score: score,
+            animate: loading,
+          ),
+          _OverviewCredits(badges: badges, animate: loading),
+          if (synopsis.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: _OverviewSynopsis(text: synopsis),
+            ),
+          if (genres.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final g in genres)
+                    _GenreChip(
+                      text: g,
+                      onTap: onGenre == null ? null : () => onGenre!(g),
+                    ),
+                ],
+              ),
+            ),
+          if (people.isNotEmpty)
+            _Reveal(
+              key: const ValueKey('ov-cast'),
+              animate: loading,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _header(context, castLabel),
+                  _row(
+                    castRowHeight,
+                    people.length,
+                    (i) => _castCard(people[i], avatar),
+                  ),
+                ],
+              ),
+            )
+          else if (loading && relations.isEmpty && seasons.isEmpty)
+            // Nothing has arrived yet: one centred loader, not ghost rows.
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 36),
+              child: Center(child: _AppSpinner()),
+            ),
+          if (crew.isNotEmpty)
+            _Reveal(
+              key: const ValueKey('ov-crew'),
+              animate: loading,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _header(context, context.l10n.creators),
+                  _row(
+                    castRowHeight,
+                    crew.length,
+                    (i) => _castCard(crew[i], avatar),
+                  ),
+                ],
+              ),
+            ),
+          if (seasonCards.isNotEmpty)
+            _Reveal(
+              key: const ValueKey('ov-seasons'),
+              animate: loading,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _header(context, context.l10n.seasons),
+                  _row(
+                    228,
+                    seasonCards.length,
+                    (i) => SizedBox(
+                      width: 112,
+                      child: rel._card(context, seasonCards[i], i),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (rest.isNotEmpty)
+            _Reveal(
+              key: const ValueKey('ov-relations'),
+              animate: loading,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _header(context, context.l10n.relations),
+                  _row(
+                    228,
+                    rest.length,
+                    (i) => SizedBox(
+                      width: 112,
+                      child: rel._card(
+                        context,
+                        rest[i],
+                        seasonCards.length + i,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (!loading &&
+              onRetryExtras != null &&
+              cast.isEmpty &&
+              relations.isEmpty &&
+              seasons.isEmpty)
+            _RetryOnce(onRetry: onRetryExtras!),
+          _header(context, context.l10n.details),
+          details,
+        ],
+      ),
+    );
+  }
+}
+
+/// The synopsis at the top of Overview: three lines, "Read more" opens it in place.
+class _OverviewSynopsis extends StatefulWidget {
+  const _OverviewSynopsis({required this.text});
+  final String text;
+
+  @override
+  State<_OverviewSynopsis> createState() => _OverviewSynopsisState();
+}
+
+class _OverviewSynopsisState extends State<_OverviewSynopsis> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: () => setState(() => _open = !_open),
+    behavior: HitTestBehavior.opaque,
+    child: AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      alignment: Alignment.topCenter,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            widget.text,
+            style: AppText.body,
+            maxLines: _open ? null : 4,
+            overflow: _open ? TextOverflow.visible : TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _open ? context.l10n.watchSeeLess : context.l10n.readMore,
+            style: AppText.caption.copyWith(
+              color: AppColors.accent,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// Fades its child in the first time it appears (350ms, long soft ease) so a
+/// section that arrives after the page opened eases in instead of popping.
+class _Reveal extends StatelessWidget {
+  const _Reveal({super.key, required this.child, required this.animate});
+  final Widget child;
+
+  /// False when the page is coming back with everything already loaded — it
+  /// should simply be there, not fade in a second time.
+  final bool animate;
+
+  @override
+  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
+    tween: Tween(begin: animate ? 0 : 1, end: 1),
+    duration: const Duration(milliseconds: 350),
+    curve: const Cubic(0.5, 0, 0.14, 1),
+    builder: (context, v, child) => Opacity(opacity: v, child: child),
+    child: child,
+  );
+}
+
+/// The letters in a coloured circle, for a cast member with no photo.
+class _InitialsAvatar extends StatelessWidget {
+  const _InitialsAvatar(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    color: AppColors.surface2,
+    alignment: Alignment.center,
+    child: Text(
+      text,
+      style: AppText.headline.copyWith(
+        color: AppColors.textSecondary,
+        fontSize: 20,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+}
+
+/// The app's own loader: a circle in the accent colour.
+///
+/// It stays invisible for the first moments and only fades in if the wait is
+/// real — a title that loads straight away never flashes a spinner.
+class _AppSpinner extends StatefulWidget {
+  const _AppSpinner();
+
+  @override
+  State<_AppSpinner> createState() => _AppSpinnerState();
+}
+
+class _AppSpinnerState extends State<_AppSpinner> {
+  /// How long a load may take before it is worth showing anything.
+  static const _grace = Duration(milliseconds: 400);
+
+  bool _show = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(_grace, () {
+      if (mounted) setState(() => _show = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedOpacity(
+    opacity: _show ? 1 : 0,
+    duration: const Duration(milliseconds: 250),
+    curve: Curves.easeOut,
+    child: SizedBox(
+      width: 40,
+      height: 40,
+      child: CircularProgressIndicator(
+        strokeWidth: 3.2,
+        color: AppColors.accent,
+      ),
+    ),
+  );
+}
+
+/// The top row of Overview: year, run time, the age tag, and a score — the IMDb
+/// one when it was found, otherwise the tracker score. Shows only what exists,
+/// and is not drawn at all when there is nothing.
+class _OverviewMeta extends StatelessWidget {
+  const _OverviewMeta({
+    required this.year,
+    required this.runtime,
+    required this.ageRating,
+    required this.imdbRating,
+    required this.score,
+    required this.animate,
+  });
+
+  final String? year;
+  final String? runtime;
+  final String? ageRating;
+  final String? imdbRating;
+
+  /// Out of 100.
+  final int? score;
+
+  /// The age tag and IMDb score arrive after the page opens; they fade in then,
+  /// but not on a page that comes back with them already there.
+  final bool animate;
+
+  /// The yellow people know IMDb by, kept for the score and its label only.
+  static const Color _imdb = Color(0xFFF5C518);
+
+  @override
+  Widget build(BuildContext context) {
+    final strong = AppText.headline.copyWith(
+      fontSize: 16,
+      fontWeight: FontWeight.w700,
+    );
+    final items = <Widget>[
+      if ((year ?? '').isNotEmpty) Text(year!, style: strong),
+      if (runtime != null) Text(runtime!, style: strong),
+      if (ageRating != null)
+        _Reveal(
+          key: const ValueKey('ov-age'),
+          animate: animate,
+          child: _MetaBadge(ageRating!),
+        ),
+      if (imdbRating != null)
+        _Reveal(
+          key: const ValueKey('ov-imdb'),
+          animate: animate,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                'IMDb',
+                style: AppText.caption.copyWith(
+                  color: _imdb,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(imdbRating!, style: strong.copyWith(color: _imdb)),
+            ],
+          ),
+        )
+      else if (score != null && score! > 0)
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.star_rounded, size: 17, color: AppColors.accent),
+            const SizedBox(width: 3),
+            Text((score! / 10).toStringAsFixed(1), style: strong),
+          ],
+        ),
+    ];
+    if (items.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+        alignment: Alignment.topLeft,
+        child: Wrap(
+          spacing: 14,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: items,
+        ),
+      ),
+    );
+  }
+}
+
+/// Invisible. A moment after it appears it calls [onRetry] once; if the page goes
+/// away first, the call is cancelled with it.
+class _RetryOnce extends StatefulWidget {
+  const _RetryOnce({required this.onRetry});
+  final VoidCallback onRetry;
+
+  @override
+  State<_RetryOnce> createState() => _RetryOnceState();
+}
+
+class _RetryOnceState extends State<_RetryOnce> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(const Duration(milliseconds: 1500), widget.onRetry);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
+}
+
+/// A genre on the Overview: the accent colour on a soft accent tint, so it reads
+/// as a tag and not as grey text on a grey box. Tappable only when [onTap] is set.
+class _GenreChip extends StatelessWidget {
+  const _GenreChip({required this.text, required this.onTap});
+
+  final String text;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    behavior: HitTestBehavior.opaque,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppColors.accentSoft,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Text(
+        text,
+        style: AppText.caption.copyWith(
+          color: AppColors.accent,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    ),
+  );
+}
+
+/// "Director: …", "Writer: …" and, for a series, "Creators: …" — one muted line
+/// each, only for what was found. Not drawn at all when there is none.
+class _OverviewCredits extends StatelessWidget {
+  const _OverviewCredits({required this.badges, required this.animate});
+
+  final TitleBadges? badges;
+
+  /// They arrive after the page opens; they fade in then, not on a page that
+  /// comes back with them already there.
+  final bool animate;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = badges;
+    if (b == null) return const SizedBox.shrink();
+    final l10n = context.l10n;
+    final lines = <(String, List<String>)>[
+      (l10n.director, b.directors),
+      (l10n.writer, b.writers),
+      (l10n.creators, b.creators),
+    ].where((e) => e.$2.isNotEmpty).toList();
+    if (lines.isEmpty) return const SizedBox.shrink();
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+      alignment: Alignment.topLeft,
+      child: _Reveal(
+        key: const ValueKey('ov-credits'),
+        animate: animate,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final (label, names) in lines)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: '$label:  ',
+                          style: AppText.body.copyWith(
+                            color: AppColors.textSecondary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        TextSpan(
+                          text: names.join(', '),
+                          style: AppText.body.copyWith(
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
