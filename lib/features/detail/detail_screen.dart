@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'dart:io';
 
@@ -19,9 +20,12 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/zmode/season_chain.dart';
 import '../../core/zmode/metadata_provider_prefs.dart';
+import '../../core/ui/adaptive_layout.dart';
 import '../../core/ui/poster_card.dart';
 import '../../core/metadata/title_badges.dart';
 import 'letterbox_detector.dart';
+import '../../core/ui/backdrop_focus.dart';
+import '../../core/ui/image_fade.dart';
 import '../../core/ui/detail_prefs.dart';
 import '../../core/ui/poster_palette.dart';
 import '../../core/ui/mobile_hero_art.dart';
@@ -493,8 +497,76 @@ class _DetailViewState extends State<_DetailView>
   /// Banner height: tall, scaling with the screen width (about 490px on a
   /// typical phone). Set from the screen size each time the page builds.
   double _heroHeight = 320;
-  static double _heroFor(BuildContext context) =>
-      (MediaQuery.sizeOf(context).width * 1.25).clamp(380.0, 560.0);
+  static double _heroFor(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final h = (size.width * 1.25).clamp(380.0, 560.0);
+    if (!isTabletLayout(context)) return h;
+    // Tablet: the same banner, but never taller than ~60% of the screen so
+    // Play and the source row are still on screen without scrolling.
+    if (isWideTabletLayout(context)) {
+      // Wide: a shorter banner, so the buttons and the tabs start on screen.
+      return (size.height * 0.45).clamp(300.0, 560.0);
+    }
+    return h.clamp(380.0, math.max(380.0, size.height * 0.6));
+  }
+
+  /// Tablet only. Below ~840dp wide: the same single column as the phone,
+  /// centred at a readable width. Wider: everything shares one left edge (title
+  /// on the banner, a left column of buttons, then the tabs and content across
+  /// the width). A phone gets [slivers] back as is.
+  List<Widget> _tabletSlivers(BuildContext context, List<Widget> slivers) {
+    if (!isTabletLayout(context)) return slivers;
+    if (isWideTabletLayout(context) && slivers.length >= 3) {
+      // Wide: one left-aligned column of buttons under the banner, on the same
+      // edge as the title above and the tabs below.
+      final inset =
+          wideSideInset(context) - 16; // the blocks carry their own 16
+      return [
+        for (var i = 0; i < slivers.length; i++)
+          if (i > 0 &&
+              i < slivers.length - 1 &&
+              slivers[i] is SliverToBoxAdapter &&
+              (slivers[i] as SliverToBoxAdapter).child != null)
+            SliverToBoxAdapter(
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: 520 + inset),
+                  child: Padding(
+                    padding: EdgeInsets.only(left: inset),
+                    child: (slivers[i] as SliverToBoxAdapter).child,
+                  ),
+                ),
+              ),
+            )
+          else
+            slivers[i],
+      ];
+    }
+    return [
+      for (final s in slivers)
+        if (s is SliverToBoxAdapter && s.child != null)
+          SliverToBoxAdapter(child: tabletColumn(context, s.child!))
+        else
+          s,
+    ];
+  }
+
+  /// The tab pages as the NestedScrollView body.
+  Widget _tabletBody(BuildContext context, Widget pages) {
+    if (!isTabletLayout(context)) return pages;
+    if (isWideTabletLayout(context)) {
+      // The tabs' own 16 + this gives the same left edge as everything above.
+      final w = MediaQuery.sizeOf(context).width;
+      final side = math.max(0.0, (w - kWideContentWidth) / 2) + 16;
+      return Padding(
+        padding: EdgeInsets.symmetric(horizontal: side),
+        child: pages,
+      );
+    }
+    return tabletColumn(context, pages);
+  }
+
   bool _showAppBarTitle = false;
   bool _hasEntered = false;
   Animation<double>? _routeAnimation;
@@ -1136,7 +1208,10 @@ class _DetailViewState extends State<_DetailView>
   /// leaves the rest resolving in the background, so a chooser built from it
   /// often shows one server out of several — you'd be picking from a list that
   /// isn't finished. Waiting costs a few seconds and shows the real choice.
-  Future<List<VideoSource>> _resolveWithProgress(Episode ep) async {
+  Future<List<VideoSource>> _resolveWithProgress(
+    Episode ep, {
+    bool fast = false,
+  }) async {
     showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -1153,7 +1228,7 @@ class _DetailViewState extends State<_DetailView>
       return await sl<CatalogueRepository>().sources(
         ep.url,
         sourceId: widget.item.sourceId,
-        fast: false,
+        fast: fast,
       );
     } catch (_) {
       // A dead source shouldn't leave a spinner on screen; the caller reports
@@ -1161,6 +1236,35 @@ class _DetailViewState extends State<_DetailView>
       return const [];
     } finally {
       if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  /// Feeds late mirrors into an open Play-mirror sheet. CloudStream keeps
+  /// resolving after the first link; everything else reports done at once, so
+  /// this ends on the first poll for them. Capped so it can never spin.
+  Future<void> _pollMoreMirrors(
+    Episode ep,
+    ValueNotifier<List<VideoSource>> live,
+    ValueNotifier<bool> loadingMore,
+    bool Function() closed,
+  ) async {
+    final repo = sl<CatalogueRepository>();
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    try {
+      while (!closed() && DateTime.now().isBefore(deadline)) {
+        final r = await repo.polledSources(
+          ep.url,
+          sourceId: widget.item.sourceId,
+        );
+        if (closed()) return;
+        final seen = {for (final s in live.value) s.url};
+        final fresh = r.sources.where((s) => !seen.contains(s.url)).toList();
+        if (fresh.isNotEmpty) live.value = [...live.value, ...fresh];
+        if (r.done) return;
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+      }
+    } finally {
+      if (!closed()) loadingMore.value = false;
     }
   }
 
@@ -1336,19 +1440,29 @@ class _DetailViewState extends State<_DetailView>
           await _openPlayer(episodes, index, detail, category);
           return;
         }
-        // Scraping takes seconds, unlike every other row here, so the wait is
-        // shown rather than left as a dead long-press.
-        final sources = await _resolveWithProgress(ep);
+        // Fast resolve: cached/prefetched links are instant, a cold one returns
+        // on the first usable link. The sheet opens with that and the rest of
+        // the mirrors are added as they land (see _pollMoreMirrors).
+        final sources = await _resolveWithProgress(ep, fast: true);
         if (!mounted) return;
         if (sources.isEmpty) {
           showAppToast(context, context.l10n.noSourcesFoundForThisEpisode);
           return;
         }
+        final live = ValueNotifier<List<VideoSource>>(sources);
+        final loadingMore = ValueNotifier<bool>(true);
+        var closed = false;
+        unawaited(_pollMoreMirrors(ep, live, loadingMore, () => closed));
         final picked = await showMirrorSheet(
           context,
           episodeLabel: label,
           sources: sources,
+          live: live,
+          loadingMore: loadingMore,
         );
+        closed = true;
+        live.dispose();
+        loadingMore.dispose();
         if (picked == null || !mounted) return;
         // The pick applies to this episode and nothing else — no label saved.
         // Remembering it meant re-finding the mirror by label on the next
@@ -1525,6 +1639,15 @@ class _DetailViewState extends State<_DetailView>
     /// adaptive default. One-shot — the cubit clears it after this episode.
     VideoSource? initialSource,
   }) async {
+    // Live channels always use the Android player: it decrypts DRM channels and
+    // has live controls, mpv has neither. iOS has no other player, so it stays
+    // on mpv. An explicit long-press choice still wins.
+    if (detail.isLive &&
+        playerOverride == null &&
+        Platform.isAndroid &&
+        !sl<AppMode>().isTv) {
+      playerOverride = (package: PlaybackPrefs.androidPlayerId, label: '');
+    }
     // A finished download of this exact episode plays from disk — no sweep,
     // no links, no waiting. Exact keys first, then the source episode URL,
     // then MAL id + number — so a file saved from a source page is still
@@ -2504,14 +2627,13 @@ class _DetailViewState extends State<_DetailView>
         ? (_tmdbBanners[widget.item.id] ?? detail.banner ?? item.banner)
         : (detail.banner ?? item.banner);
 
-    // Tall phone hero: prefer TMDB's portrait art; other sources stay as-is.
+    // The plain backdrop first, as on Home: the title is drawn over it, so a
+    // picture with the title printed in would show it twice. A poster only when
+    // there is no backdrop.
+    final heroBackdrop = banner ?? item.landscapePoster;
+    final heroIsBackdrop = heroBackdrop?.trim().isNotEmpty == true;
     final coverUrl =
-        mobileHeroArt(
-          detail.cover ?? item.cover,
-          banner ?? item.landscapePoster,
-          sourceId: detail.sourceId,
-        ) ??
-        '';
+        homeHeroArt(detail.cover ?? item.cover, heroBackdrop) ?? '';
     final coverHeaders = detail.coverHeaders ?? item.coverHeaders;
     final hasCover = coverUrl.isNotEmpty;
 
@@ -2591,9 +2713,12 @@ class _DetailViewState extends State<_DetailView>
 
     // The title (or logo) and up to three genres. Drawn ON the banner, over
     // its fade, so the picture runs under the title.
+    final wide = isWideTabletLayout(context);
     final Widget titleBlock = Column(
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.center,
+      crossAxisAlignment: wide
+          ? CrossAxisAlignment.start
+          : CrossAxisAlignment.center,
       children: [
         // Tapping the title opens the search popup (Cue pop-in):
         // pre-filled query, "Search" or "Search all sources".
@@ -2604,7 +2729,7 @@ class _DetailViewState extends State<_DetailView>
           child: AnimatedSize(
             duration: const Duration(milliseconds: 250),
             curve: Curves.easeOut,
-            alignment: Alignment.topCenter,
+            alignment: wide ? Alignment.topLeft : Alignment.topCenter,
             child: _logoUrl != null
                 // Compact natural-size box (never full-width), centred.
                 ? ConstrainedBox(
@@ -2615,7 +2740,7 @@ class _DetailViewState extends State<_DetailView>
                     child: CachedNetworkImage(
                       imageUrl: logoUrl!,
                       fit: BoxFit.contain,
-                      alignment: Alignment.center,
+                      alignment: wide ? Alignment.centerLeft : Alignment.center,
                       fadeInDuration: const Duration(milliseconds: 250),
                       errorWidget: (_, _, _) => _headerTitleText(detail.title),
                       errorListener: widget.item.sourceId == stremioSourceId
@@ -2630,14 +2755,14 @@ class _DetailViewState extends State<_DetailView>
         AnimatedSize(
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeOut,
-          alignment: Alignment.topCenter,
+          alignment: wide ? Alignment.topLeft : Alignment.topCenter,
           child: detail.genres.isEmpty
               ? const SizedBox.shrink()
               : Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
                     detail.genres.take(3).join(' \u2022 '),
-                    textAlign: TextAlign.center,
+                    textAlign: wide ? TextAlign.left : TextAlign.center,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppText.body.copyWith(
@@ -2664,6 +2789,127 @@ class _DetailViewState extends State<_DetailView>
       ],
     );
 
+    // Built once here; _tabletBody decides how it is wrapped (phone: as is).
+    final detailPages = _FadePages(
+      controller: _tabController,
+      children: [
+        // ── Overview: cast, seasons/relations and details as rows ───────────
+        _OverviewTab(
+          // Cast and relations arrive on their own request, after the page is
+          // already up — and before the source resolve has even started.
+          loading: state.extrasLoading || state.episodesLoading,
+          cast: state.cast.isNotEmpty
+              ? state.cast
+              : [for (final n in detail.cast) CastMember(name: n)],
+          onOpenPerson: (ref) => Navigator.of(
+            context,
+          ).push(PersonPage.route(ref, sourceId: widget.item.sourceId)),
+          relations: state.relations,
+          seasons: state.seasons,
+          onOpenRelation: _openRelation,
+          synopsis: cleanSynopsis(detail.description) ?? '',
+          genres: detail.genres,
+          year: detail.year,
+          runtimeMins: detail.durationMins,
+          badges: state.badges,
+          onRetryExtras: cubit.retryExtras,
+          score: detail.score,
+          // Tappable only on a metadata title, same rule the old Details tab used.
+          onGenre: detail.sourceId == ZmodeIds.sourceId
+              ? (g) => _browseBy(context, MetaFilters(genres: [g]))
+              : null,
+          castLabel: isReading ? context.l10n.characters : context.l10n.cast,
+          details: _DetailsTab(
+            sourceName: sourceName,
+            statusStr: statusStr,
+            reading: isReading,
+            genres: detail.genres,
+            studios: detail.studios,
+            episodeCount: eps.length,
+            isMovie: detail.isFilm,
+            year: detail.year,
+            description: cleanSynopsis(detail.description),
+            detail: detail,
+            embedded: true,
+          ),
+        ),
+        // ── Episodes ──────────────────────────────────────────────────────
+        _EpisodesTab(
+          loading: state.episodesLoading,
+          versionPicker: showSubDubFor(detail)
+              ? SegmentedButton<String>(
+                  showSelectedIcon: false,
+                  style: SegmentedButton.styleFrom(
+                    backgroundColor: AppColors.surface2,
+                    foregroundColor: AppColors.textSecondary,
+                    selectedBackgroundColor: AppColors.accentSoft,
+                    selectedForegroundColor: AppColors.textPrimary,
+                    side: const BorderSide(color: AppColors.hairline),
+                    textStyle: AppText.caption.copyWith(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 7),
+                    minimumSize: const Size(36, 28),
+                  ),
+                  segments: [
+                    ButtonSegment(value: 'sub', label: Text(context.l10n.sub)),
+                    ButtonSegment(value: 'dub', label: Text(context.l10n.dub)),
+                  ],
+                  selected: {category},
+                  onSelectionChanged: (selection) =>
+                      _changeEpisodeVersion(context, selection.single),
+                )
+              : null,
+          eps: eps,
+          seasonEps: seasonEps,
+          fillerEps: _fillerEps,
+          hasMultipleSeasons: hasMultipleSeasons,
+          seasonSet: seasonSet,
+          currentSeason: currentSeason,
+          onSelectSeason: cubit.selectSeason,
+          coverUrl: coverUrl,
+          coverHeaders: coverHeaders,
+          sourceId: item.sourceId,
+          // Downloads name the source that has the files; progress above
+          // stays on the canonical id.
+          downloadSourceId: detail.sourceId.isNotEmpty
+              ? detail.sourceId
+              : item.sourceId,
+          showId: item.id,
+          showUrl: item.url,
+          resumeIndex: _resumeIndex,
+          hasAnyMark: hasAnyMark,
+          trackerProgress: _trackerProgress,
+          nextAiringEpisode: _nextAiringEpisode,
+          nextAiringAt: _nextAiringAt,
+          onOpen: (fullIndex) => _openPlayer(eps, fullIndex, detail, category),
+          // Reading has no player to pick, but it does have the marking
+          // rows — gating the whole menu on the player is what hid them.
+          onEpisodeMenu: (fullIndex) =>
+              _pickPlayerFor(eps, fullIndex, detail, category),
+          onRefresh: cubit.refresh,
+          onDownload: (ep) => isReading
+              ? _downloadChapter(ep, detail)
+              : _downloadSingle(ep, detail, category),
+          onDownloadMany: isReading
+              ? (eps) => _downloadChapters(eps, detail)
+              : null,
+          resumeChapter: readResume == null || eps.isEmpty
+              ? null
+              : eps[readResume.index],
+          // Only a catalogue title has another source to fall back on.
+          onSwitchSource: ZmodeIds.isZ(item.url) ? _switchSource : null,
+          isReading: isReading,
+          filmMeta: _filmMeta(detail),
+          filmTitle: detail.title,
+          hasScheduledVideos: detail.hasScheduledVideos,
+        ),
+        // ── Comments: not built yet ─────────────────────────────────────────
+        _emptyTab(Icons.forum_outlined, context.l10n.watchComingSoon),
+      ],
+    );
+
     return NotificationListener<ScrollNotification>(
       onNotification: _onScrollNotification,
       // The banner does the stretching, so the stock overscroll glow stays off.
@@ -2673,7 +2919,7 @@ class _DetailViewState extends State<_DetailView>
           valueListenable: _pull,
           builder: (context, pull, _) => NestedScrollView(
             controller: _scrollController,
-            headerSliverBuilder: (context, _) => [
+            headerSliverBuilder: (context, _) => _tabletSlivers(context, [
               // ── 1. Hero: backdrop + overlapping poster + status/total ──────────
               SliverAppBar(
                 // Pulled down: the banner gets taller and everything under it is
@@ -2747,10 +2993,12 @@ class _DetailViewState extends State<_DetailView>
                           background: RepaintBoundary(
                             child: _Hero(
                               coverUrl: coverUrl,
-                              imageDecodeWidth: mobileHeroDecodeWidth(
-                                item.sourceId,
-                                800,
-                              ),
+                              // A backdrop is wide and needs more pixels than a tall
+                              // poster to fill the hero. Capped at 2000 so a poster
+                              // fallback stays small.
+                              imageDecodeWidth: heroIsBackdrop
+                                  ? math.min(heroDecodeMaxWidth, 2000)
+                                  : mobileHeroDecodeWidth(item.sourceId, 800),
                               coverHeaders: coverHeaders,
                               hasCover: hasCover,
                               tint: ThemeController.adaptiveColour
@@ -2778,9 +3026,16 @@ class _DetailViewState extends State<_DetailView>
                           child: Opacity(
                             opacity: ((open - 0.35) / 0.45).clamp(0.0, 1.0),
                             child: Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                              padding: EdgeInsets.fromLTRB(
+                                wide ? wideSideInset(context) : 16,
+                                0,
+                                16,
+                                wide ? 20 : 10,
+                              ),
                               child: OverflowBox(
-                                alignment: Alignment.bottomCenter,
+                                alignment: wide
+                                    ? Alignment.bottomLeft
+                                    : Alignment.bottomCenter,
                                 minHeight: 0,
                                 maxHeight: 400,
                                 child: titleBlock,
@@ -2993,135 +3248,8 @@ class _DetailViewState extends State<_DetailView>
                   tint: ThemeController.adaptiveColour ? _tint : null,
                 ),
               ),
-            ],
-            body: _FadePages(
-              controller: _tabController,
-              children: [
-                // ── Overview: cast, seasons/relations and details as rows ───────────
-                _OverviewTab(
-                  // Cast and relations arrive on their own request, after the page is
-                  // already up — and before the source resolve has even started.
-                  loading: state.extrasLoading || state.episodesLoading,
-                  cast: state.cast.isNotEmpty
-                      ? state.cast
-                      : [for (final n in detail.cast) CastMember(name: n)],
-                  onOpenPerson: (ref) => Navigator.of(
-                    context,
-                  ).push(PersonPage.route(ref, sourceId: widget.item.sourceId)),
-                  relations: state.relations,
-                  seasons: state.seasons,
-                  onOpenRelation: _openRelation,
-                  synopsis: cleanSynopsis(detail.description) ?? '',
-                  genres: detail.genres,
-                  year: detail.year,
-                  runtimeMins: detail.durationMins,
-                  badges: state.badges,
-                  onRetryExtras: cubit.retryExtras,
-                  score: detail.score,
-                  // Tappable only on a metadata title, same rule the old Details tab used.
-                  onGenre: detail.sourceId == ZmodeIds.sourceId
-                      ? (g) => _browseBy(context, MetaFilters(genres: [g]))
-                      : null,
-                  castLabel: isReading
-                      ? context.l10n.characters
-                      : context.l10n.cast,
-                  details: _DetailsTab(
-                    sourceName: sourceName,
-                    statusStr: statusStr,
-                    reading: isReading,
-                    genres: detail.genres,
-                    studios: detail.studios,
-                    episodeCount: eps.length,
-                    isMovie: detail.isFilm,
-                    year: detail.year,
-                    description: cleanSynopsis(detail.description),
-                    detail: detail,
-                    embedded: true,
-                  ),
-                ),
-                // ── Episodes ──────────────────────────────────────────────────────
-                _EpisodesTab(
-                  loading: state.episodesLoading,
-                  versionPicker: showSubDubFor(detail)
-                      ? SegmentedButton<String>(
-                          showSelectedIcon: false,
-                          style: SegmentedButton.styleFrom(
-                            backgroundColor: AppColors.surface2,
-                            foregroundColor: AppColors.textSecondary,
-                            selectedBackgroundColor: AppColors.accentSoft,
-                            selectedForegroundColor: AppColors.textPrimary,
-                            side: const BorderSide(color: AppColors.hairline),
-                            textStyle: AppText.caption.copyWith(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            padding: const EdgeInsets.symmetric(horizontal: 7),
-                            minimumSize: const Size(36, 28),
-                          ),
-                          segments: [
-                            ButtonSegment(
-                              value: 'sub',
-                              label: Text(context.l10n.sub),
-                            ),
-                            ButtonSegment(
-                              value: 'dub',
-                              label: Text(context.l10n.dub),
-                            ),
-                          ],
-                          selected: {category},
-                          onSelectionChanged: (selection) =>
-                              _changeEpisodeVersion(context, selection.single),
-                        )
-                      : null,
-                  eps: eps,
-                  seasonEps: seasonEps,
-                  fillerEps: _fillerEps,
-                  hasMultipleSeasons: hasMultipleSeasons,
-                  seasonSet: seasonSet,
-                  currentSeason: currentSeason,
-                  onSelectSeason: cubit.selectSeason,
-                  coverUrl: coverUrl,
-                  coverHeaders: coverHeaders,
-                  sourceId: item.sourceId,
-                  // Downloads name the source that has the files; progress above
-                  // stays on the canonical id.
-                  downloadSourceId: detail.sourceId.isNotEmpty
-                      ? detail.sourceId
-                      : item.sourceId,
-                  showId: item.id,
-                  showUrl: item.url,
-                  resumeIndex: _resumeIndex,
-                  hasAnyMark: hasAnyMark,
-                  trackerProgress: _trackerProgress,
-                  nextAiringEpisode: _nextAiringEpisode,
-                  nextAiringAt: _nextAiringAt,
-                  onOpen: (fullIndex) =>
-                      _openPlayer(eps, fullIndex, detail, category),
-                  // Reading has no player to pick, but it does have the marking
-                  // rows — gating the whole menu on the player is what hid them.
-                  onEpisodeMenu: (fullIndex) =>
-                      _pickPlayerFor(eps, fullIndex, detail, category),
-                  onRefresh: cubit.refresh,
-                  onDownload: (ep) => isReading
-                      ? _downloadChapter(ep, detail)
-                      : _downloadSingle(ep, detail, category),
-                  onDownloadMany: isReading
-                      ? (eps) => _downloadChapters(eps, detail)
-                      : null,
-                  resumeChapter: readResume == null || eps.isEmpty
-                      ? null
-                      : eps[readResume.index],
-                  // Only a catalogue title has another source to fall back on.
-                  onSwitchSource: ZmodeIds.isZ(item.url) ? _switchSource : null,
-                  isReading: isReading,
-                  filmMeta: _filmMeta(detail),
-                  filmTitle: detail.title,
-                  hasScheduledVideos: detail.hasScheduledVideos,
-                ),
-                // ── Comments: not built yet ─────────────────────────────────────────
-                _emptyTab(Icons.forum_outlined, context.l10n.watchComingSoon),
-              ],
-            ),
+            ]),
+            body: _tabletBody(context, detailPages),
           ),
         ),
       ),

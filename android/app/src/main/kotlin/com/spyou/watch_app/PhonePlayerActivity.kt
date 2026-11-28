@@ -433,12 +433,14 @@ class PhonePlayerActivity : Activity() {
         val previous = dockView ?: playerView
         dockView = view
         PlayerView.switchTargetView(activePlayer, previous, view)
+        scheduleSoftwareSurfaceRefresh()
     }
 
     internal fun detachDockView(view: PlayerView) {
         if (dockView !== view) return
         dockView = null
         player?.let { PlayerView.switchTargetView(it, view, playerView) }
+        scheduleSoftwareSurfaceRefresh()
     }
 
     internal fun dockCommand(command: String): Boolean {
@@ -540,11 +542,17 @@ class PhonePlayerActivity : Activity() {
         requestedOrientation = when (playerOrientation) {
             "portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             "system" -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            else -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            // Both landscape sides; plain LANDSCAPE pins one side only.
+            else -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
         if (playerOrientation == "system") {
+            // The observer only reports a turn once the phone is clearly upright
+            // or clearly on its side (dead zone between), so a small tilt never
+            // flips the player. Hold the settled posture until the next turn.
             orientationObserver = PhoneOrientationObserver(this) {
-                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                requestedOrientation = if (it == Configuration.ORIENTATION_LANDSCAPE)
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             }
         }
         if (keepScreenOn) {
@@ -835,6 +843,8 @@ class PhonePlayerActivity : Activity() {
                 subs = subtitlesFromIntent(),
                 mime = intent.getStringExtra(PhonePlayerIntent.EXTRA_MIME),
                 positionMs = intent.getLongExtra(PhonePlayerIntent.EXTRA_POSITION, 0L),
+                drmKid = intent.getStringExtra(PhonePlayerIntent.EXTRA_DRM_KID),
+                drmKey = intent.getStringExtra(PhonePlayerIntent.EXTRA_DRM_KEY),
             )
         }
     }
@@ -870,8 +880,12 @@ class PhonePlayerActivity : Activity() {
             // Force cues onto the user's vertical Position (0=top … 100=bottom).
             // Bottom padding alone can't do this: most VTT/SRT cues set their
             // own line and ignore it. Same helper the TV player uses.
-            override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
-                renderSubtitleCues(cueGroup.cues)
+            override fun onEvents(source: Player, events: Player.Events) {
+                // PlayerView writes the raw cues in onCues, including after a
+                // seek. Apply styling after all individual callbacks finish.
+                if (player === source && events.contains(Player.EVENT_CUES)) {
+                    renderSubtitleCues(source.currentCues.cues)
+                }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -1930,6 +1944,8 @@ class PhonePlayerActivity : Activity() {
         subs: List<MediaItem.SubtitleConfiguration>,
         mime: String?,
         positionMs: Long,
+        drmKid: String? = null,
+        drmKey: String? = null,
     ) {
         if (loadedEpisodeIndex != currentIndex) {
             autoSkipped.clear()
@@ -1977,6 +1993,17 @@ class PhonePlayerActivity : Activity() {
             dataSource = PhonePlaybackCache.factory(upstream, url, headers, playbackDiskCache, nativeMb * 1024 * 1024)
         }
         val sourceFactory = DefaultMediaSourceFactory(dataSource)
+        // ClearKey DRM (CENC/DASH live channels). Same setup the TV player uses;
+        // streams without keys skip this and play exactly as before.
+        if (!drmKid.isNullOrEmpty() && !drmKey.isNullOrEmpty()) {
+            val json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"$drmKey\",\"kid\":\"$drmKid\"}]," +
+                "\"type\":\"temporary\"}"
+            val drmManager = androidx.media3.exoplayer.drm.DefaultDrmSessionManager.Builder()
+                .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, androidx.media3.exoplayer.drm.FrameworkMediaDrm.DEFAULT_PROVIDER)
+                .setMultiSession(false)
+                .build(androidx.media3.exoplayer.drm.LocalMediaDrmCallback(json.toByteArray(Charsets.UTF_8)))
+            sourceFactory.setDrmSessionManagerProvider { drmManager }
+        }
         currentSourceFactory = sourceFactory
         p.setMediaSource(sourceFactory.createMediaSource(builder.build()))
         loadedEpisodeIndex = currentIndex
@@ -2047,7 +2074,9 @@ class PhonePlayerActivity : Activity() {
             bumpControls()
             setBuffering(true)
         }
-        handler.postDelayed(resolveTimeout, 30_000L)
+        // Just past Dart's 60s wait for a source the viewer picked (a slow one like
+        // XD Movies needs ~30s); Dart answers sooner for everything else.
+        handler.postDelayed(resolveTimeout, 65_000L)
         ch.invokeMethod(
             "resolveEpisode",
             mapOf("index" to index),
@@ -2106,6 +2135,8 @@ class PhonePlayerActivity : Activity() {
             ),
             mime = m["mimeType"] as? String,
             positionMs = (m["positionMs"] as? Number)?.toLong() ?: 0L,
+            drmKid = m["drmKid"] as? String,
+            drmKey = m["drmKey"] as? String,
         )
         switching = false // the new media's buffering drives the spinner now
         bumpControls()
@@ -2326,6 +2357,8 @@ class PhonePlayerActivity : Activity() {
             ),
             mime = m["mimeType"] as? String,
             positionMs = keep,
+            drmKid = m["drmKid"] as? String,
+            drmKey = m["drmKey"] as? String,
         )
         if (loadingOverlay.visibility == View.VISIBLE) {
             setLoadingStatus(getString(R.string.phone_player_status_starting))
@@ -2955,7 +2988,7 @@ class PhonePlayerActivity : Activity() {
     private fun toggleRotation() {
         requestedOrientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         bumpControls()
     }
 
@@ -3185,6 +3218,23 @@ class PhonePlayerActivity : Activity() {
         return true
     }
 
+    /**
+     * The FFmpeg (software) video renderer remembers its output surface by a JNI
+     * handle. After the surface is swapped (mini player, PiP, restore) the new one
+     * can carry the same handle, so it keeps drawing into the dead surface and the
+     * picture stays black with no error. A fresh player forgets the old surface.
+     * Hardware decode isn't affected. Waits a moment so the swap has settled.
+     */
+    private val refreshSoftwareSurface = Runnable {
+        if (isFinishing || isDestroyed) return@Runnable
+        if ((decoderOverride ?: defaultDecoderMode) == "sw") switchDecoder("sw")
+    }
+
+    private fun scheduleSoftwareSurfaceRefresh() {
+        handler.removeCallbacks(refreshSoftwareSurface)
+        handler.postDelayed(refreshSoftwareSurface, 400L)
+    }
+
     private fun replaceDecoderPlayer(mode: String): ExoPlayer {
         val previous = checkNotNull(player)
         val target = dockView ?: playerView
@@ -3279,7 +3329,7 @@ class PhonePlayerActivity : Activity() {
         val p = player ?: return
         // Not gated on duration: some streams never report one, and resume
         // still has to work for them.
-        if (!playbackStarted) return
+        if (!playbackStarted || liveStream) return
         PhonePlayerBridge.channel?.invokeMethod(
             "saveProgress",
             mapOf(
@@ -3902,7 +3952,7 @@ class PhonePlayerActivity : Activity() {
     // ── Horizontal scrub: full width maps to the whole duration ────────────
     private fun startHSeek() {
         val p = player ?: return
-        if (p.duration <= 0) {
+        if (p.duration <= 0 || liveStream) {
             gestureMode = 0
             return
         }
@@ -4274,8 +4324,22 @@ class PhonePlayerActivity : Activity() {
         } else null)
     }
 
+    // A live stream has no timeline: show LIVE instead of a position and hide
+    // the seek bar. Also read when saving progress so a live channel never
+    // leaves a resume point (which would start it mid-window next time).
+    private var liveStream = false
+
     private fun syncProgress() {
         val p = player ?: return
+        val live = p.isCurrentMediaItemLive
+        if (live != liveStream) {
+            liveStream = live
+            seek.visibility = if (live) View.INVISIBLE else View.VISIBLE
+        }
+        if (live) {
+            if (!scrubbing) timeText.text = "● LIVE"
+            return
+        }
         val d = p.duration
         if (d > 0) {
             val pos = p.currentPosition
@@ -4462,7 +4526,7 @@ class PhonePlayerActivity : Activity() {
             "playerClosed",
             mapOf(
                 "sessionId" to sessionId,
-                PhonePlayerIntent.RESULT_POSITION to positionMs,
+                PhonePlayerIntent.RESULT_POSITION to if (liveStream) 0L else positionMs,
                 PhonePlayerIntent.RESULT_DURATION to durationMs,
                 "engineFallback" to engineFallbackRequested,
                 "ended" to (player?.playbackState == Player.STATE_ENDED),
@@ -4533,6 +4597,7 @@ class PhonePlayerActivity : Activity() {
         newConfig: Configuration,
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        scheduleSoftwareSurfaceRefresh()
         // The app behind a PiP window is live and visible; it must not stay frozen.
         PhonePlayerBridge.channel?.invokeMethod(
             "playerPip",
